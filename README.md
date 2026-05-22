@@ -1,6 +1,8 @@
-# 技能中枢
+# 影子
 
 个人本地 Skill 管理器，用来统一查看和分发 Trae CN、Codex、Claude Code、Aiden 的全局与项目级 Skill。
+
+「影子」表示主库中的 Skill 是实体，应用到不同 Agent 或项目时生成可收回、可覆盖、可验证的影子。
 
 ## 当前能力
 
@@ -62,7 +64,7 @@ npm run dev -- --host 127.0.0.1
 打包后的 macOS 应用位置：
 
 ```text
-src-tauri/target/release/bundle/macos/技能中枢.app
+src-tauri/target/release/bundle/macos/影子.app
 ```
 
 ## 验证记录
@@ -72,5 +74,5 @@ src-tauri/target/release/bundle/macos/技能中枢.app
 - `npm run build`
 - `cargo check --manifest-path src-tauri/Cargo.toml`
 - `npm run tauri:build`
-- macOS 可启动打包后的 `技能中枢.app`
+- macOS 可启动打包后的 `影子.app`
 - 1280×820 与 1040×680 预览截图下，三栏布局没有明显重叠或按钮溢出

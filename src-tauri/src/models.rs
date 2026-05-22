@@ -195,3 +195,32 @@ pub struct BulkAdoptReport {
     pub changed: usize,
     pub errors: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageSkill {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub category: String,
+    pub entry_prefix: String,
+    pub exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackageScan {
+    pub package_path: String,
+    pub skills: Vec<PackageSkill>,
+    pub ignored_plugin_skills: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageImportReport {
+    pub state: AppState,
+    pub changed: usize,
+    pub skipped: usize,
+    pub errors: Vec<String>,
+}

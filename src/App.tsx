@@ -40,11 +40,13 @@ import {
   detectDefaultAgents,
   getAppState,
   getOnboardingStatus,
+  importSkillsFromPackage,
   importSkill,
   listUnmanagedForOnboarding,
   openPath,
   removeAgent,
   removeProject,
+  scanSkillPackage,
   setAgentEnabled,
   setOnboardingCompleted,
   updateAgentPath,
@@ -58,8 +60,10 @@ import type {
   DeployTarget,
   DetectedAgent,
   OperationReport,
+  PackageSkill,
   Preset,
   Project,
+  SkillPackageScan,
   Skill,
   SkillStatus,
   TargetStatus,
@@ -93,6 +97,7 @@ const statusTone: Record<SkillStatus, string> = {
 };
 
 type TransferStatus = SkillStatus | "partial" | "problem";
+type FeedbackSurface = "page" | "overlay";
 
 const transferStatusText: Record<TransferStatus, string> = {
   ...statusText,
@@ -112,6 +117,7 @@ type StatusFilter =
   | "unmanaged"
   | "conflict"
   | "broken"
+  | "invalid"
   | "disabled"
   | "enabled";
 
@@ -121,15 +127,16 @@ const statusFilterLabels: Record<StatusFilter, string> = {
   unmanaged: "未入库",
   conflict: "冲突",
   broken: "失效",
+  invalid: "格式异常",
   disabled: "未启用",
   enabled: "已启用",
 };
 
-const transferFilterLabels: Record<StatusFilter, string> = {
+const transferIssueFilterLabels: Record<StatusFilter, string> = {
   ...statusFilterLabels,
-  issues: "需确认",
-  disabled: "未应用",
-  enabled: "已应用",
+  all: "显示全部",
+  issues: "全部问题",
+  broken: "路径异常",
 };
 
 const statusFilterOrder: StatusFilter[] = [
@@ -138,13 +145,17 @@ const statusFilterOrder: StatusFilter[] = [
   "unmanaged",
   "conflict",
   "broken",
+  "invalid",
   "disabled",
   "enabled",
 ];
 
 const skillFilterOrder: StatusFilter[] = ["all", "issues", "enabled", "disabled"];
+const transferIssueFilterOrder: StatusFilter[] = ["issues", "conflict", "unmanaged", "broken", "invalid"];
 
-const NOTICE_AUTO_DISMISS_MS = 3000;
+const FEEDBACK_AUTO_DISMISS_MS = 2400;
+const PRODUCT_NAME = "影子";
+const PRODUCT_TAGLINE = "本地 Skill 工作台";
 
 type Selection =
   | { type: "skill"; id: string }
@@ -156,6 +167,8 @@ type Selection =
 type TransferColumnKey = "applied" | "available";
 
 const TRANSFER_DRAG_MIME_TYPE = "application/x-skill-hub-transfer-item";
+const DEFAULT_SKILL_PACKAGE_PATH = "/Users/bytedance/Downloads/o3vUSTmq.zip";
+const PACKAGE_CATEGORIES = ["产品创意", "需求编写", "UI设计", "其他工具"] as const;
 
 type TransferDragPayload = {
   id: string;
@@ -214,7 +227,7 @@ type ConfirmDialogState = {
   details?: string[];
   confirmLabel: string;
   tone: "danger" | "warn";
-  onConfirm: () => Promise<void>;
+  onConfirm: () => Promise<boolean | void>;
 } | null;
 
 export default function App() {
@@ -222,6 +235,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [overlayError, setOverlayError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [onboardingCompleted, setOnboardingCompletedState] = useState<boolean | null>(null);
   const [view, setView] = useState<ViewKey>("library");
@@ -237,6 +251,8 @@ export default function App() {
   const [presetDraft, setPresetDraft] = useState<PresetDraft | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [expandedTransferPresetIds, setExpandedTransferPresetIds] = useState<Set<string>>(new Set());
+  const activeOverlayKey = drawer ? "drawer" : importSkillOpen ? "import" : presetDraft ? "preset" : confirmDialog ? "confirm" : "";
+  const activeOverlayKeyRef = useRef(activeOverlayKey);
 
   async function load(showSpinner = false) {
     try {
@@ -262,7 +278,7 @@ export default function App() {
           : defaultSelectionForView(view, next, nextAgentId, nextProjectId, nextProjectAgentId),
       );
     } catch (cause) {
-      setError(String(cause));
+      setError(formatActionError(cause));
       setNotice(null);
     } finally {
       setLoading(false);
@@ -285,9 +301,27 @@ export default function App() {
 
   useEffect(() => {
     if (!notice) return undefined;
-    const timeoutId = window.setTimeout(() => setNotice(null), NOTICE_AUTO_DISMISS_MS);
+    const timeoutId = window.setTimeout(() => setNotice(null), FEEDBACK_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timeoutId);
   }, [notice]);
+
+  useEffect(() => {
+    if (!error) return undefined;
+    const timeoutId = window.setTimeout(() => setError(null), FEEDBACK_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [error]);
+
+  useEffect(() => {
+    if (!overlayError) return undefined;
+    const timeoutId = window.setTimeout(() => setOverlayError(null), FEEDBACK_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [overlayError]);
+
+  useEffect(() => {
+    if (activeOverlayKey === activeOverlayKeyRef.current) return;
+    activeOverlayKeyRef.current = activeOverlayKey;
+    setOverlayError(null);
+  }, [activeOverlayKey]);
 
   const allStatuses = useMemo(() => {
     if (!state) return [];
@@ -400,6 +434,11 @@ export default function App() {
     [queriedTransferItems, statusFilter],
   );
 
+  const transferIssueFilterOptions = useMemo(
+    () => buildTransferIssueFilterOptions(queriedTransferItems, statusFilter),
+    [queriedTransferItems, statusFilter],
+  );
+
   const appliedTransferItems = useMemo(
     () => filteredTransferItems.filter((item) => item.status !== "disabled"),
     [filteredTransferItems],
@@ -466,6 +505,13 @@ export default function App() {
 
   useEffect(() => {
     if (!state) return;
+    if ((view === "global" || view === "projects") &&
+      statusFilter !== "all" &&
+      !transferIssueFilterOptions.some((option) => option.id === statusFilter)
+    ) {
+      setStatusFilter("all");
+      return;
+    }
     if (view === "library") {
       if (selected?.type === "skill" && filteredSkills.some((skill) => skill.id === selected.id)) return;
       setSelected(filteredSkills[0] ? { type: "skill", id: filteredSkills[0].id } : null);
@@ -495,6 +541,8 @@ export default function App() {
     queriedPresets,
     selected,
     state,
+    statusFilter,
+    transferIssueFilterOptions,
     view,
   ]);
 
@@ -586,7 +634,7 @@ export default function App() {
 
   function confirmDeleteSkill(skill: Skill, locations: TargetStatus[]) {
     if (locations.length) {
-      setError(`请先收回 ${locations.length} 个启用位置，再删除主库技能。`);
+      setError(`请先收回 ${locations.length} 个启用位置`);
       return;
     }
     setConfirmDialog({
@@ -596,11 +644,11 @@ export default function App() {
       confirmLabel: "确认删除",
       tone: "danger",
       onConfirm: async () => {
-        await runAction(async () => {
+        return runAction(async () => {
           const next = await deleteSkill(skill.id);
           setState(next);
           setSelected(defaultSelectionForView("library", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
-        }, "已删除技能");
+        }, "已删除技能", "overlay");
       },
     });
   }
@@ -613,18 +661,18 @@ export default function App() {
       confirmLabel: "确认删除",
       tone: "danger",
       onConfirm: async () => {
-        await runAction(async () => {
+        return runAction(async () => {
           const next = await deletePreset(preset.id);
           setState(next);
           setSelected(defaultSelectionForView("presets", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
-        }, "已删除组合");
+        }, "已删除组合", "overlay");
       },
     });
   }
 
   async function deployLibraryToStatus(skill: Skill, status: TargetStatus) {
-    const apply = async () => {
-      await runAction(async () => {
+    const apply = async (surface: FeedbackSurface = "page") => {
+      return runAction(async () => {
         const report = await deploySkill(
           skill.id,
           [
@@ -635,8 +683,8 @@ export default function App() {
           ],
           true,
         );
-        await refreshAfterReport(report, "已按技能列表分发");
-      });
+        return refreshAfterReport(report, "已按技能列表分发", surface);
+      }, undefined, surface);
     };
 
     if (status.status === "conflict" || status.status === "unmanaged") {
@@ -646,23 +694,39 @@ export default function App() {
         details: [status.targetPath, `技能列表：${skill.path}`],
         confirmLabel: "确认覆盖",
         tone: "warn",
-        onConfirm: apply,
+        onConfirm: () => apply("overlay"),
       });
       return;
     }
 
-    await apply();
+    await apply("page");
   }
 
-  async function runAction(action: () => Promise<void>, success?: string) {
+  function setFeedbackError(message: string, surface: FeedbackSurface) {
+    if (surface === "overlay") {
+      setOverlayError(message);
+      return;
+    }
+    setError(message);
+  }
+
+  async function runAction(
+    action: () => Promise<boolean | void>,
+    success?: string,
+    surface: FeedbackSurface = "page",
+  ) {
     try {
       setWorking(true);
-      setError(null);
-      await action();
+      if (surface === "overlay") {
+        setOverlayError(null);
+      } else {
+        setError(null);
+      }
+      const result = await action();
       if (success) setNotice(success);
-      return true;
+      return result !== false;
     } catch (cause) {
-      setError(formatActionError(cause));
+      setFeedbackError(formatActionError(cause), surface);
       setNotice(null);
       return false;
     } finally {
@@ -670,38 +734,52 @@ export default function App() {
     }
   }
 
-  async function refreshAfterReport(report: OperationReport, successLabel: string) {
+  async function refreshAfterReport(
+    report: OperationReport,
+    successLabel: string,
+    surface: FeedbackSurface = "page",
+  ): Promise<boolean> {
     await load();
     const summary = formatOperationReport(report, successLabel);
     if (report.errors.length) {
-      setError(`${summary}。下一步：检查目标路径、目录权限或设置里的 Agent 路径后重试。${formatReportExamples(report.errors)}`);
+      setFeedbackError(`${summary}。${formatReportExamples(report.errors)}`, surface);
       setNotice(null);
-      return;
+      return false;
     }
     if (report.conflicts.length) {
-      setNotice(`${summary}。下一步：在列表中筛选“冲突”，确认后可用主库覆盖。`);
-      return;
+      setNotice(`${summary}，请处理冲突`);
+      return true;
     }
-    setNotice(`${summary}。`);
+    setNotice(summary);
+    return true;
   }
 
-  async function pickAndImportSkill(onImported?: () => void) {
-    const picked = await open({ directory: true, multiple: false, title: "选择技能文件夹" });
+  async function pickAndImportSkill(onImported?: () => void, sourceKind: "folder" | "zip" = "folder") {
+    const picked = await open(sourceKind === "folder"
+      ? { directory: true, multiple: false, title: "选择技能文件夹" }
+      : {
+          multiple: false,
+          title: "选择 .zip 技能压缩包",
+          filters: [{ name: "Skill 压缩包", extensions: ["zip"] }],
+        });
     if (!picked || Array.isArray(picked)) return;
+    const previousIds = new Set(state?.skills.map((skill) => skill.id) ?? []);
     const imported = await runAction(async () => {
       const next = await importSkill(picked);
-      const importedId = slugifyClient(fileNameFromPath(picked));
+      const importedId = slugifyClient(stripKnownExtension(fileNameFromPath(picked)));
+      const newSkills = next.skills.filter((skill) => !previousIds.has(skill.id));
       const importedSkill = next.skills.find(
         (skill) => skill.id === importedId || skill.name === importedId,
-      );
+      ) ?? newSkills[0];
+      const changedCount = Math.max(newSkills.length, 1);
       setState(next);
       setView("library");
       setStatusFilter("all");
       setSelected(importedSkill
         ? { type: "skill", id: importedSkill.id }
         : defaultSelectionForView("library", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
-      setNotice(`已导入技能：变更 1 个。下一步可以在右侧分发。`);
-    });
+      setNotice(`已导入技能：${changedCount} 个`);
+    }, undefined, "overlay");
     if (imported) onImported?.();
   }
 
@@ -748,7 +826,7 @@ export default function App() {
       confirmLabel: "确认导入",
       tone: "warn",
       onConfirm: async () => {
-        await runAction(async () => {
+        return runAction(async () => {
           let nextState: AppState | null = null;
           let changed = 0;
           const errors: string[] = [];
@@ -761,7 +839,7 @@ export default function App() {
               );
               changed += 1;
             } catch (cause) {
-              errors.push(`${status.displayName}：${cleanErrorMessage(cause)}`);
+              errors.push(`${status.displayName}：${formatActionError(cause)}`);
             }
           }
           if (nextState) setState(nextState);
@@ -771,8 +849,8 @@ export default function App() {
             conflicts: [],
             errors,
           };
-          await refreshAfterReport(report, "已导入存量技能");
-        });
+          return refreshAfterReport(report, "已导入存量技能", "overlay");
+        }, undefined, "overlay");
       },
     });
   }
@@ -791,20 +869,20 @@ export default function App() {
   async function applyTransferItem(item: TransferItem) {
     if (!item.skillIds.length) {
       setError(item.kind === "composition"
-        ? "这个技能组合没有可应用的成员。下一步：先编辑组合，至少选择一个仍在技能列表里的技能。"
-        : "该 Skill 尚未进入主库，不能直接应用。下一步：先执行入库，再重新应用。");
+        ? "这个组合没有可应用成员"
+        : "这个 Skill 尚未入库");
       return;
     }
     if (hasBlockingPathRisk(item)) {
-      setError("当前项目路径不存在，已阻断应用。下一步：先在设置中确认项目路径后重试。");
+      setError("项目路径不存在，请先到设置修正");
       return;
     }
     const targets = currentTransferTargets();
     if (!targets.length) return;
     const hasOverwriteRisk = itemHasOverwriteRisk(item);
     const hasMissingMembers = item.kind === "composition" && item.missingCount > 0;
-    const apply = async () => {
-      await runAction(async () => {
+    const apply = async (surface: FeedbackSurface = "page") => {
+      return runAction(async () => {
         let combined = OperationReportEmpty();
         if (hasMissingMembers) {
           combined.skipped += item.missingCount * targets.length;
@@ -813,8 +891,8 @@ export default function App() {
           const report = await deploySkill(skillId, targets, hasOverwriteRisk);
           combined = mergeReport(combined, report);
         }
-        await refreshAfterReport(combined, view === "projects" ? "已应用到项目" : "已应用到 Agent");
-      });
+        return refreshAfterReport(combined, view === "projects" ? "已应用到项目" : "已应用到 Agent", surface);
+      }, undefined, surface);
     };
     if (hasOverwriteRisk || hasMissingMembers) {
       const riskyStatuses = item.statuses.filter((status) => isOverwriteRiskStatus(status.status));
@@ -832,22 +910,22 @@ export default function App() {
         details,
         confirmLabel: hasOverwriteRisk ? "覆盖并应用" : "应用可用成员",
         tone: "warn",
-        onConfirm: apply,
+        onConfirm: () => apply("overlay"),
       });
       return;
     }
-    await apply();
+    await apply("page");
   }
 
   async function withdrawTransferItem(item: TransferItem) {
     if (!item.skillIds.length) {
       setError(item.kind === "composition"
-        ? "这个技能组合没有可收回的有效成员。下一步：编辑组合或手动检查目标目录。"
-        : "该 Skill 尚未进入主库，无法判断是否为本应用创建的软链接。下一步：先入库或手动处理目标目录。");
+        ? "这个组合没有可收回成员"
+        : "这个 Skill 尚未入库，无法收回");
       return;
     }
     if (!canWithdrawTransferItem(item)) {
-      setError("当前状态不能直接收回。下一步：先处理冲突、未入库或路径异常。");
+      setError("当前状态不能直接收回");
       return;
     }
     const targets = currentTransferTargets();
@@ -913,11 +991,13 @@ export default function App() {
     if (view === "global") {
       return (
         <>
-          <StatusFilterBar
-            value={statusFilter}
-            options={buildTransferFilterOptions(queriedTransferItems)}
-            onChange={changeStatusFilter}
-          />
+          {transferIssueFilterOptions.length ? (
+            <StatusFilterBar
+              value={statusFilter}
+              options={transferIssueFilterOptions}
+              onChange={changeStatusFilter}
+            />
+          ) : null}
           <ImportExistingToolbar
             statuses={transferItems.flatMap((item) => item.statuses)}
             onImport={adoptStatuses}
@@ -941,11 +1021,13 @@ export default function App() {
         <>
           {selectedProjectId ? (
             <>
-              <StatusFilterBar
-                value={statusFilter}
-                options={buildTransferFilterOptions(queriedTransferItems)}
-                onChange={changeStatusFilter}
-              />
+              {transferIssueFilterOptions.length ? (
+                <StatusFilterBar
+                  value={statusFilter}
+                  options={transferIssueFilterOptions}
+                  onChange={changeStatusFilter}
+                />
+              ) : null}
               <ImportExistingToolbar
                 statuses={transferItems.flatMap((item) => item.statuses)}
                 onImport={adoptStatuses}
@@ -1009,12 +1091,12 @@ export default function App() {
           const agent = state.agents.find((item) => item.id === agentId);
           setConfirmDialog({
             title: `移除 Agent：${agent?.name ?? agentId}`,
-            message: "只会从技能中枢的管理列表移除，不会删除真实目录，也不会删除已经存在的 Skill。",
+            message: "只会从影子的管理列表移除，不会删除真实目录，也不会删除已经存在的 Skill。",
             details: agent ? [agent.globalPath, `项目目录规则：<项目根目录>/${agent.projectRelativePath}`] : undefined,
             confirmLabel: "确认移除",
             tone: "warn",
             onConfirm: async () => {
-              await runAction(async () => {
+              return runAction(async () => {
                 const next = await removeAgent(agentId);
                 const nextAgentId = next.agents.some((item) => item.id === selectedAgentId)
                   ? selectedAgentId
@@ -1026,7 +1108,7 @@ export default function App() {
                 setSelectedAgentId(nextAgentId);
                 setSelectedProjectAgentId(nextProjectAgentId);
                 setSelected(defaultSelectionForView(view, next, nextAgentId, selectedProjectId, nextProjectAgentId));
-              }, "已移除 Agent");
+              }, "已移除 Agent", "overlay");
             },
           });
         }}
@@ -1034,18 +1116,18 @@ export default function App() {
           const project = state.projects.find((item) => item.id === projectId);
           setConfirmDialog({
             title: `移除项目：${project?.name ?? projectId}`,
-            message: "只会从技能中枢的管理列表移除，不会删除项目目录。",
+            message: "只会从影子的管理列表移除，不会删除项目目录。",
             details: project ? [project.path] : undefined,
             confirmLabel: "确认移除",
             tone: "warn",
             onConfirm: async () => {
-              await runAction(async () => {
+              return runAction(async () => {
                 const next = await removeProject(projectId);
                 const nextProjectId = resolveProjectId(next, selectedProjectId === projectId ? null : selectedProjectId);
                 setState(next);
                 setSelectedProjectId(nextProjectId);
                 setSelected(defaultSelectionForView("projects", next, selectedAgentId, nextProjectId, selectedProjectAgentId));
-              }, "已移除项目");
+              }, "已移除项目", "overlay");
             },
           });
         }}
@@ -1338,6 +1420,7 @@ export default function App() {
             const noticeParts: string[] = [];
             noticeParts.push(`${summary.enabledAgents} 个 Agent`);
             if (summary.adoptedSkills > 0) noticeParts.push(`${summary.adoptedSkills} 个 Skill 入库`);
+            if (summary.installedPackageSkills > 0) noticeParts.push(`${summary.installedPackageSkills} 个预制 Skill`);
             if (summary.addedProjects > 0) noticeParts.push(`${summary.addedProjects} 个项目`);
             setNotice(`已完成初始化：${noticeParts.join("，")}`);
           } catch (cause) {
@@ -1356,11 +1439,11 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">
-            <Layers3 size={18} />
+            <img src="/app-icon.png" alt="" />
           </div>
           <div>
-            <strong>技能中枢</strong>
-            <span>本地 Skill 工作台</span>
+            <strong>{PRODUCT_NAME}</strong>
+            <span>{PRODUCT_TAGLINE}</span>
           </div>
         </div>
         <nav className="nav-list" aria-label="主导航">
@@ -1471,25 +1554,6 @@ export default function App() {
           </div>
         </header>
 
-        {error ? (
-          <div className="banner error" role="alert">
-            <AlertTriangle size={16} />
-            {error}
-            <button onClick={() => setError(null)} aria-label="关闭错误">
-              <X size={14} />
-            </button>
-          </div>
-        ) : null}
-        {notice ? (
-          <div className="banner success" role="status" aria-live="polite">
-            <CheckCircle2 size={16} />
-            {notice}
-            <button onClick={() => setNotice(null)} aria-label="关闭提示">
-              <X size={14} />
-            </button>
-          </div>
-        ) : null}
-
         {!state && !loading ? (
           <StartupFallback error={error} onRetry={() => void load(true)} />
         ) : (
@@ -1561,6 +1625,7 @@ export default function App() {
           onClose={() => setDrawer(null)}
           onApply={async (targets, overwrite) => {
             await runAction(async () => {
+              let ok = true;
               if (drawer.type === "skill") {
                 let combined: OperationReport = {
                   changed: 0,
@@ -1572,7 +1637,7 @@ export default function App() {
                   const report = await deploySkill(skillId, targets, overwrite);
                   combined = mergeReport(combined, report);
                 }
-                await refreshAfterReport(combined, "已分发");
+                ok = await refreshAfterReport(combined, "已分发", "overlay");
               } else {
                 const skillIds = existingPresetSkillIds(state, drawer.presetId);
                 let combined = OperationReportEmpty();
@@ -1583,11 +1648,12 @@ export default function App() {
                   const report = await deploySkill(skillId, targets, overwrite);
                   combined = mergeReport(combined, report);
                 }
-                await refreshAfterReport(combined, "已应用组合");
+                ok = await refreshAfterReport(combined, "已应用组合", "overlay");
               }
+              if (!ok) return false;
               setDrawer(null);
               setCheckedSkillIds(new Set());
-            });
+            }, undefined, "overlay");
           }}
           onWithdraw={async (targets) => {
             await runAction(async () => {
@@ -1597,9 +1663,10 @@ export default function App() {
                   const report = await withdrawSkill(skillId, targets);
                   combined = mergeReport(combined, report);
                 }
-                await refreshAfterReport(combined, "已收回组合");
+                return refreshAfterReport(combined, "已收回组合", "overlay");
               }
-            });
+              return true;
+            }, undefined, "overlay");
           }}
         />
       ) : null}
@@ -1608,7 +1675,7 @@ export default function App() {
         <ImportSkillDialog
           working={working}
           onClose={() => setImportSkillOpen(false)}
-          onPickLocal={() => void pickAndImportSkill(() => setImportSkillOpen(false))}
+          onPickLocal={(sourceKind) => void pickAndImportSkill(() => setImportSkillOpen(false), sourceKind)}
         />
       ) : null}
 
@@ -1628,7 +1695,7 @@ export default function App() {
               setState(next);
               setSelected({ type: "preset", id: draft.id ?? slugifyClient(draft.name) });
               setPresetDraft(null);
-            }, "已保存技能组合")
+            }, "已保存技能组合", "overlay")
           }
         />
       ) : null}
@@ -1639,11 +1706,18 @@ export default function App() {
           working={working}
           onCancel={() => setConfirmDialog(null)}
           onConfirm={async () => {
-            await confirmDialog.onConfirm();
-            setConfirmDialog(null);
+            const ok = await confirmDialog.onConfirm();
+            if (ok !== false) setConfirmDialog(null);
           }}
         />
       ) : null}
+      <ToastViewport
+        items={[
+          ...(overlayError ? [{ id: "overlay-error", tone: "error" as const, text: overlayError }] : []),
+          ...(error ? [{ id: "page-error", tone: "error" as const, text: error }] : []),
+          ...(notice ? [{ id: "notice", tone: "success" as const, text: notice }] : []),
+        ].slice(0, 2)}
+      />
     </div>
   );
 }
@@ -1716,9 +1790,10 @@ type OnboardingSummary = {
   enabledAgents: number;
   adoptedSkills: number;
   addedProjects: number;
+  installedPackageSkills: number;
 };
 
-type OnboardingStep = 1 | 2 | 3;
+type OnboardingStep = 1 | 2 | 3 | 4;
 
 function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSummary) => void | Promise<void> }) {
   const [step, setStep] = useState<OnboardingStep>(1);
@@ -1735,6 +1810,13 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
   const [stepNotice, setStepNotice] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [busy, setBusy] = useState(false);
+  const [packagePath, setPackagePath] = useState(DEFAULT_SKILL_PACKAGE_PATH);
+  const [packageScan, setPackageScan] = useState<SkillPackageScan | null>(null);
+  const [packageLoading, setPackageLoading] = useState(false);
+  const [packageAutoScanStarted, setPackageAutoScanStarted] = useState(false);
+  const [selectedPackageSkillIds, setSelectedPackageSkillIds] = useState<Set<string>>(new Set());
+  const [packageInstalledCount, setPackageInstalledCount] = useState(0);
+  const [packageImporting, setPackageImporting] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -1864,11 +1946,116 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     }
   }
 
-  async function finishOnboarding() {
+  useEffect(() => {
+    if (step !== 4 || packageAutoScanStarted) return;
+    setPackageAutoScanStarted(true);
+    void loadSkillPackage(packagePath);
+  }, [packageAutoScanStarted, packagePath, step]);
+
+  useEffect(() => {
+    if (!stepError) return undefined;
+    const timeoutId = window.setTimeout(() => setStepError(null), FEEDBACK_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [stepError]);
+
+  useEffect(() => {
+    if (!stepNotice) return undefined;
+    const timeoutId = window.setTimeout(() => setStepNotice(null), FEEDBACK_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [stepNotice]);
+
+  async function loadSkillPackage(nextPath: string) {
+    setPackageLoading(true);
+    setStepError(null);
+    setStepNotice(null);
+    try {
+      const scan = await scanSkillPackage(nextPath);
+      setPackagePath(nextPath);
+      setPackageScan(scan);
+      setSelectedPackageSkillIds(new Set(scan.skills.filter((skill) => !skill.exists).map((skill) => skill.id)));
+    } catch (cause) {
+      setPackageScan(null);
+      setSelectedPackageSkillIds(new Set());
+      setStepError(`无法读取预制 Skill 压缩包：${cleanErrorMessage(cause)}`);
+    } finally {
+      setPackageLoading(false);
+    }
+  }
+
+  async function pickSkillPackageInOnboarding() {
+    setBusy(true);
+    try {
+      const picked = await open({
+        directory: false,
+        multiple: false,
+        title: "选择预制 Skill 压缩包",
+        filters: [{ name: "Zip 压缩包", extensions: ["zip"] }],
+      });
+      if (!picked || Array.isArray(picked)) return;
+      await loadSkillPackage(picked);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function togglePackageSkill(skill: PackageSkill) {
+    if (skill.exists) return;
+    setSelectedPackageSkillIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(skill.id)) next.delete(skill.id);
+      else next.add(skill.id);
+      return next;
+    });
+  }
+
+  function togglePackageCategory(category: string, skills: PackageSkill[]) {
+    const selectableIds = skills.filter((skill) => !skill.exists).map((skill) => skill.id);
+    if (!selectableIds.length) return;
+    setSelectedPackageSkillIds((prev) => {
+      const next = new Set(prev);
+      const allSelected = selectableIds.every((id) => next.has(id));
+      for (const id of selectableIds) {
+        if (allSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }
+
+  async function importSelectedPackageSkills() {
+    const skillIds = [...selectedPackageSkillIds];
+    if (!skillIds.length) {
+      await finishOnboarding();
+      return;
+    }
+    setPackageImporting(true);
+    setStepError(null);
+    setStepNotice(null);
+    try {
+      const report = await importSkillsFromPackage(packagePath, skillIds);
+      const installed = packageInstalledCount + report.changed;
+      setPackageInstalledCount(installed);
+      if (report.errors.length) {
+        setStepError(`部分预制 Skill 导入失败：${report.errors.slice(0, 3).join("；")}${report.errors.length > 3 ? "…" : ""}`);
+        setStepNotice(`已导入 ${report.changed} 个，跳过 ${report.skipped} 个。可以修复后重试，也可以先完成初始化。`);
+        setSelectedPackageSkillIds(new Set());
+        setPackageScan(null);
+      } else {
+        await finishOnboarding(installed);
+      }
+    } catch (cause) {
+      setStepError(`导入预制 Skill 失败：${cleanErrorMessage(cause)}`);
+    } finally {
+      setPackageImporting(false);
+    }
+  }
+
+  async function finishOnboarding(installedOverride?: number) {
     await onFinished({
       enabledAgents: selectedAgentIds.size,
       adoptedSkills: adoptedCount,
       addedProjects: projects.length,
+      installedPackageSkills: installedOverride ?? packageInstalledCount,
     });
   }
 
@@ -1877,27 +2064,15 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
       <div className="onboarding-card">
         <header className="onboarding-header">
           <strong>初始化引导</strong>
-          <span>步骤 {step} / 3</span>
+          <span>步骤 {step} / 4</span>
         </header>
 
-        {stepError ? (
-          <div className="banner error" role="alert">
-            <AlertTriangle size={16} />
-            <span>{stepError}</span>
-            <button onClick={() => setStepError(null)} aria-label="关闭提示">
-              <X size={14} />
-            </button>
-          </div>
-        ) : null}
-        {stepNotice ? (
-          <div className="banner success" role="status">
-            <CheckCircle2 size={16} />
-            <span>{stepNotice}</span>
-            <button onClick={() => setStepNotice(null)} aria-label="关闭提示">
-              <X size={14} />
-            </button>
-          </div>
-        ) : null}
+        <ToastViewport
+          items={[
+            ...(stepError ? [{ id: "onboarding-error", tone: "error" as const, text: stepError }] : []),
+            ...(stepNotice ? [{ id: "onboarding-notice", tone: "success" as const, text: stepNotice }] : []),
+          ].slice(0, 2)}
+        />
 
         {step === 1 ? (
           <section className="onboarding-step">
@@ -1923,7 +2098,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                       />
                       <div className="onboarding-row-main">
                         <strong>{agent.name}</strong>
-                        <small>{agent.exists ? "已检测到目录" : "未检测到目录，应用 Skill 时会自动创建"}</small>
+                        <small>{agent.exists ? "已检测到目录" : "未检测到目录"}</small>
                         <code>{agent.globalPath}</code>
                       </div>
                     </label>
@@ -2059,15 +2234,170 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
               <button
                 type="button"
                 className="primary-button"
-                onClick={() => void finishOnboarding()}
+                onClick={() => setStep(4)}
                 disabled={busy}
               >
-                完成
-                <CheckCircle2 size={16} />
+                下一步
+                <ArrowRight size={16} />
               </button>
             </footer>
           </section>
         ) : null}
+
+        {step === 4 ? (
+          <section className="onboarding-step">
+            <h2>选择预制 Skill</h2>
+            <p className="onboarding-desc">
+              只读取压缩包里 `skills` 目录下的正式 Skill，不会把插件目录混进来。导入后只进入主库，不会自动分发到 Agent。
+            </p>
+            <div className="package-summary">
+              <div>
+                <span>压缩包</span>
+                <code>{packagePath}</code>
+              </div>
+              <button
+                type="button"
+                className="secondary-button compact"
+                onClick={() => void pickSkillPackageInOnboarding()}
+                disabled={busy || packageLoading || packageImporting}
+              >
+                选择压缩包
+              </button>
+            </div>
+            {packageLoading ? (
+              <div className="loading-state">
+                <Loader2 className="spin" size={18} />
+                正在识别预制 Skill
+              </div>
+            ) : packageScan ? (
+              <PackageSkillPicker
+                scan={packageScan}
+                selectedIds={selectedPackageSkillIds}
+                onToggleSkill={togglePackageSkill}
+                onToggleCategory={togglePackageCategory}
+              />
+            ) : (
+              <div className="onboarding-empty">
+                没有可展示的预制 Skill。可以选择另一个压缩包，或者先跳过。
+              </div>
+            )}
+            <footer className="onboarding-footer">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setStep(3)}
+                disabled={packageImporting}
+              >
+                <ArrowLeft size={16} />
+                上一步
+              </button>
+              <div className="onboarding-footer-right">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void finishOnboarding()}
+                  disabled={packageImporting}
+                >
+                  跳过
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void importSelectedPackageSkills()}
+                  disabled={packageImporting || packageLoading || !packageScan}
+                >
+                  {packageImporting ? <Loader2 className="spin" size={16} /> : <Archive size={16} />}
+                  导入已勾选（{selectedPackageSkillIds.size}）
+                </button>
+              </div>
+            </footer>
+          </section>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function PackageSkillPicker({
+  scan,
+  selectedIds,
+  onToggleSkill,
+  onToggleCategory,
+}: {
+  scan: SkillPackageScan;
+  selectedIds: Set<string>;
+  onToggleSkill: (skill: PackageSkill) => void;
+  onToggleCategory: (category: string, skills: PackageSkill[]) => void;
+}) {
+  const grouped = PACKAGE_CATEGORIES.map((category) => ({
+    category,
+    skills: scan.skills.filter((skill) => skill.category === category),
+  })).filter((group) => group.skills.length > 0);
+  const selectableCount = scan.skills.filter((skill) => !skill.exists).length;
+
+  return (
+    <div className="package-picker">
+      <div className="package-picker-head">
+        <strong>识别到 {scan.skills.length} 个预制 Skill</strong>
+        <span>
+          可导入 {selectableCount} 个
+          {scan.ignoredPluginSkills ? `，已忽略插件内 ${scan.ignoredPluginSkills} 个` : ""}
+        </span>
+      </div>
+      <div className="package-category-list">
+        {grouped.map((group) => {
+          const selectable = group.skills.filter((skill) => !skill.exists);
+          const selectedInGroup = selectable.filter((skill) => selectedIds.has(skill.id)).length;
+          const allSelected = selectable.length > 0 && selectedInGroup === selectable.length;
+          return (
+            <section key={group.category} className="package-category">
+              <header>
+                <div>
+                  <h3>{group.category}</h3>
+                  <span>{selectedInGroup} / {selectable.length} 可导入</span>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-button compact"
+                  onClick={() => onToggleCategory(group.category, group.skills)}
+                  disabled={!selectable.length}
+                >
+                  {allSelected ? "取消本组" : "选择本组"}
+                </button>
+              </header>
+              <div className="package-skill-list">
+                {group.skills.map((skill) => {
+                  const checked = selectedIds.has(skill.id);
+                  return (
+                    <label
+                      key={skill.id}
+                      className={[
+                        "package-skill-row",
+                        checked ? "selected" : "",
+                        skill.exists ? "disabled" : "",
+                      ].filter(Boolean).join(" ")}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={skill.exists}
+                        onChange={() => onToggleSkill(skill)}
+                      />
+                      <div className="package-skill-main">
+                        <div>
+                          <strong>{skill.displayName || skill.name}</strong>
+                          <span>{skill.exists ? "已在主库" : "可导入"}</span>
+                        </div>
+                        <p>{skill.description || "暂无说明"}</p>
+                        <code>{skill.name}</code>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
       </div>
     </div>
   );
@@ -2491,6 +2821,12 @@ function SkillTransferRow({
 }) {
   const targetColumn = column === "available" ? "applied" : "available";
   const canMove = canMoveTransferItem(item, targetColumn);
+  const secondaryMeta = item.kind === "composition"
+    ? `${item.enabledCount}/${item.memberCount} 技能`
+    : item.targetCount > 1
+      ? `${item.enabledCount}/${item.targetCount} Agent`
+      : null;
+  const showStatusPill = item.status !== "disabled" && item.status !== "enabled";
 
   return (
     <button
@@ -2534,29 +2870,14 @@ function SkillTransferRow({
         </span>
         <small>{item.description || item.skillName}</small>
       </span>
-      <span className="transfer-row-side">
-        <TransferItemStatusPill item={item} column={column} />
-        {item.kind === "composition" ? (
-          <small>{item.enabledCount}/{item.memberCount} 技能</small>
-        ) : item.targetCount > 1 ? (
-          <small>{item.enabledCount}/{item.targetCount} Agent</small>
-        ) : null}
-      </span>
+      {showStatusPill || secondaryMeta ? (
+        <span className="transfer-row-side">
+          {showStatusPill ? <StatusPill status={item.status} /> : null}
+          {secondaryMeta ? <small>{secondaryMeta}</small> : null}
+        </span>
+      ) : null}
       <TransferRowHint item={item} />
     </button>
-  );
-}
-
-function TransferItemStatusPill({ item, column }: { item: TransferItem; column: TransferColumnKey }) {
-  if (item.status !== "disabled" && item.status !== "enabled") {
-    return <StatusPill status={item.status} />;
-  }
-  const isApplied = column === "applied";
-  return (
-    <span className={`status-pill ${isApplied ? "good" : "muted"}`}>
-      <span />
-      {isApplied ? "已应用" : "未应用"}
-    </span>
   );
 }
 
@@ -2564,14 +2885,9 @@ function TransferRowHint({ item }: { item: TransferItem }) {
   if (item.kind === "composition" && item.missingCount > 0) {
     return <small className="transfer-row-hint">有 {item.missingCount} 个成员缺失，应用时会跳过</small>;
   }
-  if (
-    item.status === "disabled" &&
-    item.blockingPathCount === 0 &&
-    item.statuses.some((status) => status.status === "pathMissing" || !status.rootExists)
-  ) {
-    return <small className="transfer-row-hint">目标目录尚未创建，应用时会自动创建</small>;
-  }
-  const issue = item.statuses.find((status) => status.issue)?.issue;
+  const issue = item.statuses.find((status) =>
+    status.issue && (status.status !== "pathMissing" || item.blockingPathCount > 0)
+  )?.issue;
   if (issue) {
     return <small className="transfer-row-hint">{issue}</small>;
   }
@@ -2952,12 +3268,15 @@ function DistributionDrawer({
     const statuses = drawerSkillIds
       .map((skillId) => findTargetStatus(state, row.target.agentId, row.target.projectId ?? null, skillId))
       .filter((status): status is TargetStatus => Boolean(status));
-    const statusLabel = summarizeTargetStatuses(statuses, drawerSkillIds.length);
+    const displayStatuses = statuses.map((status) =>
+      status.status === "pathMissing" && !row.scopeMissing
+        ? { ...status, status: "disabled" as SkillStatus }
+        : status,
+    );
+    const statusLabel = summarizeTargetStatuses(displayStatuses, drawerSkillIds.length);
     const hasOverwriteRisk = statuses.some((status) => isOverwriteRiskStatus(status.status));
     const hasPathMissing = statuses.some((status) => status.status === "pathMissing");
-    const hasMissingTargetRoot = statuses.some((status) => !status.rootExists);
     const hasBlockingPathRisk = row.scopeMissing && hasPathMissing;
-    const hasCreatablePathMissing = (hasPathMissing || hasMissingTargetRoot) && !hasBlockingPathRisk;
     const hasPathRisk = statuses.some((status) => status.status === "broken" || status.status === "invalid")
       || hasBlockingPathRisk;
     const skillLabel = drawerSkills.length === 1
@@ -2973,15 +3292,12 @@ function DistributionDrawer({
         ? "需要覆盖目标同名内容"
         : hasBlockingPathRisk
           ? "项目路径不存在，需先修复"
-          : hasCreatablePathMissing
-            ? "目标目录不存在，应用时会自动创建"
           : hasPathRisk
             ? "目标路径存在异常"
-          : "可直接创建软链接",
+            : "可直接创建软链接",
       statusLabel,
       hasOverwriteRisk,
       hasBlockingPathRisk,
-      hasCreatablePathMissing,
       hasPathRisk,
     };
   });
@@ -3109,7 +3425,7 @@ function ImportSkillDialog({
   working,
 }: {
   onClose: () => void;
-  onPickLocal: () => void;
+  onPickLocal: (sourceKind: "folder" | "zip") => void;
   working: boolean;
 }) {
   const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
@@ -3129,20 +3445,24 @@ function ImportSkillDialog({
             <X size={18} />
           </button>
         </header>
-        <button
-          type="button"
-          className="import-dropzone"
-          disabled={working}
-          onClick={onPickLocal}
-          aria-describedby="local-import-note local-import-detail"
-        >
+        <div className="import-dropzone" aria-describedby="local-import-note local-import-detail">
           <span className="import-dropzone-icon" aria-hidden="true">
             <Upload size={24} />
           </span>
-          <strong>点击选择技能文件夹</strong>
-          <span id="local-import-note">需要包含 SKILL.md</span>
+          <strong>点击选择技能文件夹或 .zip</strong>
+          <span id="local-import-note">文件夹需包含 SKILL.md；.zip 可包含单个或多个技能</span>
           <small id="local-import-detail">导入后进入主库，不会自动分发</small>
-        </button>
+          <div className="import-dropzone-actions">
+            <button type="button" className="secondary-button" disabled={working} onClick={() => onPickLocal("folder")}>
+              <FolderPlus size={15} />
+              选择文件夹
+            </button>
+            <button type="button" className="primary-button" disabled={working} onClick={() => onPickLocal("zip")}>
+              <Archive size={15} />
+              选择 .zip
+            </button>
+          </div>
+        </div>
         <footer>
           <button type="button" className="ghost-button" onClick={onClose}>
             取消
@@ -3322,6 +3642,27 @@ function ConfirmDialog({
   );
 }
 
+function ToastViewport({
+  items,
+}: {
+  items: Array<{ id: string; tone: "success" | "error"; text: string }>;
+}) {
+  if (!items.length) return null;
+  return (
+    <div className="toast-viewport" aria-live="polite" aria-atomic="true">
+      {items.map((item) => {
+        const Icon = item.tone === "success" ? CheckCircle2 : AlertTriangle;
+        return (
+          <div key={item.id} className={`toast ${item.tone}`} role={item.tone === "error" ? "alert" : "status"}>
+            <Icon size={15} />
+            <span>{item.text}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function StatusPill({ status }: { status: TransferStatus }) {
   return (
     <span className={`status-pill ${transferStatusTone[status]}`}>
@@ -3370,7 +3711,9 @@ function KeyValue({ label, value }: { label: string; value: string }) {
 }
 
 function TransferStatusDetails({ item }: { item: TransferItem }) {
-  const issueStatuses = item.statuses.filter((status) => status.issue);
+  const issueStatuses = item.statuses.filter((status) =>
+    status.issue && (status.status !== "pathMissing" || item.blockingPathCount > 0)
+  );
   const pathRows = item.statuses.slice(0, 4);
   return (
     <div className="transfer-detail-block">
@@ -3692,12 +4035,20 @@ function buildStatusFilterOptions(statuses: TargetStatus[]) {
   }));
 }
 
-function buildTransferFilterOptions(items: TransferItem[]) {
-  return statusFilterOrder.map((id) => ({
-    id,
-    label: transferFilterLabels[id],
-    count: items.filter((item) => transferItemMatchesFilter(item, id)).length,
-  }));
+function buildTransferIssueFilterOptions(items: TransferItem[], activeFilter: StatusFilter) {
+  const issueOptions = transferIssueFilterOrder
+    .map((id) => ({
+      id,
+      label: transferIssueFilterLabels[id],
+      count: items.filter((item) => transferItemMatchesFilter(item, id)).length,
+    }))
+    .filter((option) => option.count > 0);
+  if (!issueOptions.length) return [];
+  if (activeFilter === "all") return issueOptions;
+  return [
+    { id: "all" as const, label: transferIssueFilterLabels.all, count: items.length },
+    ...issueOptions,
+  ];
 }
 
 function skillMatchesStatusFilter(skill: Skill, filter: StatusFilter) {
@@ -3717,10 +4068,11 @@ function targetStatusMatchesFilter(status: TargetStatus, filter: StatusFilter) {
 
 function transferItemMatchesFilter(item: TransferItem, filter: StatusFilter) {
   if (filter === "all") return true;
-  if (filter === "issues") return item.issueCount > 0 || item.status === "partial" || item.status === "problem";
+  if (filter === "issues") return item.issueCount > 0 || item.status === "problem";
   if (filter === "enabled") return item.status === "enabled" || item.status === "partial";
   if (filter === "disabled") return item.status === "disabled";
   if (filter === "broken") return item.status === "broken" || item.status === "pathMissing";
+  if (filter === "invalid") return item.status === "invalid" || item.statuses.some((status) => status.status === "invalid");
   return item.status === filter;
 }
 
@@ -3846,7 +4198,7 @@ function buildPresetTransferItem(
   const statuses = children.flatMap((child) => child.statuses);
   const status = resolvePresetTransferStatus(children, missingCount);
   const issueCount = missingCount + children.filter((child) =>
-    child.issueCount > 0 || child.status === "partial" || child.status === "problem",
+    child.issueCount > 0 || child.status === "problem",
   ).length;
   const blockingPathCount = children.reduce((count, child) => count + child.blockingPathCount, 0);
   const enabledCount = children.filter((child) => child.status === "enabled").length;
@@ -4042,15 +4394,15 @@ function toggleSetValue(setter: React.Dispatch<React.SetStateAction<Set<string>>
 
 function formatOperationReport(report: OperationReport, label: string) {
   const parts = [`${label}：变更 ${report.changed} 个`];
-  parts.push(`跳过 ${report.skipped} 个`);
-  parts.push(`冲突 ${report.conflicts.length} 个`);
-  parts.push(`错误 ${report.errors.length} 个`);
+  if (report.skipped) parts.push(`跳过 ${report.skipped} 个`);
+  if (report.conflicts.length) parts.push(`冲突 ${report.conflicts.length} 个`);
+  if (report.errors.length) parts.push(`错误 ${report.errors.length} 个`);
   return parts.join("，");
 }
 
 function formatReportExamples(values: string[]) {
   if (!values.length) return "";
-  return ` 示例：${values.slice(0, 2).join("；")}`;
+  return `原因：${values.slice(0, 2).map(simplifyErrorMessage).join("；")}`;
 }
 
 function cleanErrorMessage(cause: unknown) {
@@ -4058,12 +4410,27 @@ function cleanErrorMessage(cause: unknown) {
 }
 
 function formatActionError(cause: unknown) {
-  const message = cleanErrorMessage(cause);
-  return `${message}。下一步：检查输入内容、目标路径和目录权限后重试。`;
+  return simplifyErrorMessage(cleanErrorMessage(cause));
+}
+
+function simplifyErrorMessage(message: string) {
+  return message
+    .replace(/^主库里已经存在同名技能：/, "已存在同名技能：")
+    .replace("该文件夹缺少 SKILL.md，不能作为正式技能入库", "这个文件夹缺少 SKILL.md")
+    .replace("压缩包里未找到包含 SKILL.md 的技能目录", "压缩包里没有找到 SKILL.md")
+    .replace("请选择一个技能文件夹或 .zip 压缩包", "请选择技能文件夹或 .zip")
+    .replace("只支持导入 .zip 压缩包", "只支持 .zip 压缩包")
+    .replace(/。下一步：.*$/, "")
+    .replace(/下一步：.*$/, "")
+    .trim();
 }
 
 function fileNameFromPath(path: string) {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function stripKnownExtension(name: string) {
+  return name.replace(/\.zip$/i, "");
 }
 
 function defaultSelectionForView(

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const appName = "技能中枢.app";
+const appName = "影子.app";
 const source = path.join(rootDir, "src-tauri", "target", "release", "bundle", "macos", appName);
 const destination = path.join(rootDir, appName);
 

@@ -1,14 +1,16 @@
 use crate::models::{
     AppState, BulkAdoptItem, BulkAdoptReport, DeployTarget, DetectedAgent, OnboardingStatus,
-    OperationReport, TargetStatus,
+    OperationReport, PackageImportReport, PackageSkill, SkillPackageScan, TargetStatus,
 };
 use crate::storage::{
     copy_dir_all, create_dir_symlink, is_link_to, remove_path, resolve_symlink_target, slugify,
     Store,
 };
 use anyhow::{anyhow, Context, Result};
+use chrono::Utc;
+use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 #[tauri::command]
@@ -23,7 +25,7 @@ pub fn create_skill(name: String, description: String) -> Result<AppState, Strin
         let skill_id = slugify(&name);
         let skill_path = store.skill_path(&skill_id);
         if skill_path.exists() {
-            return Err(anyhow!("主库里已经存在同名技能：{}", skill_id));
+            return Err(anyhow!("已存在同名技能：{}", skill_id));
         }
         fs::create_dir_all(&skill_path)?;
         let description = if description.trim().is_empty() {
@@ -48,25 +50,235 @@ pub fn import_skill(source_path: String) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
         let source = PathBuf::from(source_path);
-        if !source.is_dir() {
-            return Err(anyhow!("请选择一个技能文件夹"));
+        if source.is_dir() {
+            import_skill_folder(&store, &source)?;
+        } else if source.is_file() {
+            import_skill_zip(&store, &source)?;
+        } else {
+            return Err(anyhow!("请选择一个技能文件夹或 .zip 压缩包"));
         }
-        if !source.join("SKILL.md").exists() {
-            return Err(anyhow!("该文件夹缺少 SKILL.md，不能作为正式技能入库"));
-        }
-        let name = source
-            .file_name()
-            .ok_or_else(|| anyhow!("无法识别技能文件夹名称"))?
-            .to_string_lossy()
-            .to_string();
-        let skill_id = slugify(&name);
-        let target = store.skill_path(&skill_id);
-        if target.exists() {
-            return Err(anyhow!("主库里已经存在同名技能：{}", skill_id));
-        }
-        copy_dir_all(&source, &target)?;
         store.load_app_state()
     })
+}
+
+#[tauri::command]
+pub fn scan_skill_package(package_path: String) -> Result<SkillPackageScan, String> {
+    run(|| {
+        let store = Store::new()?;
+        scan_skill_package_internal(&store, &package_path)
+    })
+}
+
+#[tauri::command]
+pub fn import_skills_from_package(
+    package_path: String,
+    skill_ids: Vec<String>,
+) -> Result<PackageImportReport, String> {
+    run(|| {
+        let store = Store::new()?;
+        let scan = scan_skill_package_internal(&store, &package_path)?;
+        let requested: HashSet<String> = skill_ids.into_iter().collect();
+        let package = PathBuf::from(&package_path);
+        let entries = list_zip_entries(&package)?;
+        let mut changed = 0usize;
+        let mut skipped = 0usize;
+        let mut errors = Vec::new();
+
+        for skill in scan.skills {
+            if !requested.contains(&skill.id) {
+                continue;
+            }
+            let target = store.skill_path(&skill.id);
+            if target.exists() {
+                skipped += 1;
+                continue;
+            }
+            match import_package_skill(&package, &entries, &skill, &target) {
+                Ok(()) => changed += 1,
+                Err(error) => {
+                    if target.exists() {
+                        let _ = remove_path(&target);
+                    }
+                    errors.push(format!("{}：{:#}", skill.display_name, error));
+                }
+            }
+        }
+
+        Ok(PackageImportReport {
+            state: store.load_app_state()?,
+            changed,
+            skipped,
+            errors,
+        })
+    })
+}
+
+fn import_skill_folder(store: &Store, source: &Path) -> Result<String> {
+    if !source.join("SKILL.md").exists() {
+        return Err(anyhow!("这个文件夹缺少 SKILL.md"));
+    }
+    let name = source
+        .file_name()
+        .ok_or_else(|| anyhow!("无法识别技能文件夹名称"))?
+        .to_string_lossy()
+        .to_string();
+    import_skill_source(store, source, &name)
+}
+
+fn import_skill_zip(store: &Store, archive: &Path) -> Result<Vec<String>> {
+    let extension = archive
+        .extension()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase());
+    if extension.as_deref() != Some("zip") {
+        return Err(anyhow!("只支持导入 .zip 压缩包"));
+    }
+
+    validate_zip_entries(archive)?;
+
+    let temp_root = store.base_dir.join(".import-temp");
+    fs::create_dir_all(&temp_root).context("无法创建导入临时目录")?;
+    let extract_root = temp_root.join(format!("zip-{}", Utc::now().timestamp_millis()));
+    fs::create_dir_all(&extract_root).context("无法创建压缩包解压目录")?;
+
+    let result = (|| {
+        let output = Command::new("unzip")
+            .arg("-qq")
+            .arg(archive)
+            .arg("-d")
+            .arg(&extract_root)
+            .output()
+            .context("无法调用系统 unzip 解压压缩包")?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "无法解压 .zip 压缩包，请确认文件未损坏：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+
+        let candidates = find_zip_skill_candidates(archive, &extract_root)?;
+        validate_import_candidates(store, &candidates)?;
+
+        let mut imported = Vec::new();
+        for candidate in candidates {
+            match import_skill_source(store, &candidate.source, &candidate.name) {
+                Ok(skill_id) => imported.push(skill_id),
+                Err(error) => {
+                    rollback_imported_skills(store, &imported);
+                    rollback_imported_skills(store, &[slugify(&candidate.name)]);
+                    return Err(error.context("导入压缩包失败，已回滚已复制技能"));
+                }
+            }
+        }
+        Ok(imported)
+    })();
+
+    if extract_root.exists() {
+        let _ = fs::remove_dir_all(&extract_root);
+    }
+
+    result
+}
+
+fn validate_zip_entries(archive: &Path) -> Result<()> {
+    let output = Command::new("unzip")
+        .arg("-Z1")
+        .arg(archive)
+        .output()
+        .context("无法读取 .zip 压缩包目录")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "无法读取 .zip 压缩包，请确认文件未损坏：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    for entry in String::from_utf8_lossy(&output.stdout).lines() {
+        if entry.trim().is_empty() {
+            continue;
+        }
+        let path = Path::new(entry);
+        for component in path.components() {
+            if matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            ) {
+                return Err(anyhow!("压缩包包含不安全路径，已拒绝导入：{}", entry));
+            }
+        }
+    }
+    Ok(())
+}
+
+struct ImportCandidate {
+    name: String,
+    source: PathBuf,
+}
+
+fn find_zip_skill_candidates(archive: &Path, extract_root: &Path) -> Result<Vec<ImportCandidate>> {
+    if extract_root.join("SKILL.md").exists() {
+        let name = archive
+            .file_stem()
+            .ok_or_else(|| anyhow!("无法识别压缩包文件名"))?
+            .to_string_lossy()
+            .to_string();
+        return Ok(vec![ImportCandidate {
+            name,
+            source: extract_root.to_path_buf(),
+        }]);
+    }
+
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(extract_root).context("无法读取压缩包解压目录")? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() || !path.join("SKILL.md").exists() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "__MACOSX" {
+            continue;
+        }
+        candidates.push(ImportCandidate { name, source: path });
+    }
+
+    if candidates.is_empty() {
+        return Err(anyhow!("压缩包里没有找到 SKILL.md"));
+    }
+    candidates.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(candidates)
+}
+
+fn validate_import_candidates(store: &Store, candidates: &[ImportCandidate]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for candidate in candidates {
+        let skill_id = slugify(&candidate.name);
+        if !seen.insert(skill_id.clone()) {
+            return Err(anyhow!("压缩包里存在导入后同名的技能：{}", skill_id));
+        }
+        if store.skill_path(&skill_id).exists() {
+            return Err(anyhow!("已存在同名技能：{}", skill_id));
+        }
+    }
+    Ok(())
+}
+
+fn import_skill_source(store: &Store, source: &Path, name: &str) -> Result<String> {
+    let skill_id = slugify(name);
+    let target = store.skill_path(&skill_id);
+    if target.exists() {
+        return Err(anyhow!("已存在同名技能：{}", skill_id));
+    }
+    copy_dir_all(source, &target)?;
+    Ok(skill_id)
+}
+
+fn rollback_imported_skills(store: &Store, skill_ids: &[String]) {
+    for skill_id in skill_ids {
+        let target = store.skill_path(skill_id);
+        if target.exists() {
+            let _ = remove_path(&target);
+        }
+    }
 }
 
 #[tauri::command]
@@ -384,6 +596,242 @@ fn target_skill_path(store: &Store, target: &DeployTarget, skill_id: &str) -> Re
         PathBuf::from(agent.global_path)
     };
     Ok(root.join(skill_id))
+}
+
+fn scan_skill_package_internal(store: &Store, package_path: &str) -> Result<SkillPackageScan> {
+    let package = PathBuf::from(package_path);
+    if !package.is_file() {
+        return Err(anyhow!("请选择一个 Skill 压缩包"));
+    }
+
+    let existing_ids: HashSet<String> = store
+        .scan_library_skills()?
+        .into_iter()
+        .map(|skill| skill.id)
+        .collect();
+    let entries = list_zip_entries(&package)?;
+    let ignored_plugin_skills = entries
+        .iter()
+        .filter(|entry| entry.contains("/plugins/") && entry.ends_with("/SKILL.md"))
+        .count();
+    let mut skills = Vec::new();
+
+    for entry in entries.iter().filter(|entry| entry.ends_with("/SKILL.md")) {
+        let parts: Vec<&str> = entry.split('/').collect();
+        if parts.len() != 4 || parts[1] != "skills" || parts[3] != "SKILL.md" {
+            continue;
+        }
+        let name = parts[2].to_string();
+        let id = slugify(&name);
+        let content = String::from_utf8_lossy(&read_zip_entry(&package, entry)?).to_string();
+        let (display_name, description) = package_skill_metadata(&name, &content);
+        skills.push(PackageSkill {
+            id: id.clone(),
+            name: name.clone(),
+            display_name,
+            description,
+            category: package_skill_category(&name).to_string(),
+            entry_prefix: format!("{}/{}/{}", parts[0], parts[1], parts[2]),
+            exists: existing_ids.contains(&id),
+        });
+    }
+
+    skills.sort_by(|a, b| {
+        package_category_order(&a.category)
+            .cmp(&package_category_order(&b.category))
+            .then(package_skill_order(&a.name).cmp(&package_skill_order(&b.name)))
+            .then(a.display_name.cmp(&b.display_name))
+    });
+
+    Ok(SkillPackageScan {
+        package_path: package_path.to_string(),
+        skills,
+        ignored_plugin_skills,
+    })
+}
+
+fn list_zip_entries(package: &Path) -> Result<Vec<String>> {
+    let output = Command::new("unzip")
+        .arg("-Z1")
+        .arg(package)
+        .output()
+        .with_context(|| format!("无法读取压缩包目录：{}", package.display()))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "无法读取压缩包目录：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn read_zip_entry(package: &Path, entry: &str) -> Result<Vec<u8>> {
+    let output = Command::new("unzip")
+        .arg("-p")
+        .arg(package)
+        .arg(entry)
+        .output()
+        .with_context(|| format!("无法读取压缩包文件：{}", entry))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "无法读取压缩包文件：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn import_package_skill(
+    package: &Path,
+    entries: &[String],
+    skill: &PackageSkill,
+    target: &Path,
+) -> Result<()> {
+    let entry_prefix = format!("{}/", skill.entry_prefix);
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.starts_with(&entry_prefix))
+    {
+        if entry.ends_with('/') || should_skip_package_entry(entry) {
+            continue;
+        }
+        let relative = entry
+            .strip_prefix(&skill.entry_prefix)
+            .ok_or_else(|| anyhow!("无法计算压缩包相对路径"))?
+            .trim_start_matches('/');
+        if !is_safe_relative_path(relative) {
+            continue;
+        }
+        let target_file = target.join(relative);
+        if let Some(parent) = target_file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(target_file, read_zip_entry(package, entry)?)?;
+    }
+    if !target.join("SKILL.md").exists() {
+        if target.exists() {
+            remove_path(target)?;
+        }
+        return Err(anyhow!("导入后缺少 SKILL.md"));
+    }
+    Ok(())
+}
+
+fn should_skip_package_entry(entry: &str) -> bool {
+    entry
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name == ".DS_Store" || name.starts_with("._"))
+}
+
+fn is_safe_relative_path(relative: &str) -> bool {
+    !relative.is_empty()
+        && !relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+}
+
+fn package_skill_metadata(name: &str, content: &str) -> (String, String) {
+    let title = content
+        .lines()
+        .find_map(|line| line.strip_prefix("# ").map(str::trim))
+        .filter(|value| !value.is_empty())
+        .unwrap_or(name)
+        .to_string();
+    let description = frontmatter_description(content)
+        .or_else(|| {
+            content
+                .lines()
+                .find(|line| {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with("---")
+                })
+                .map(|line| line.trim().to_string())
+        })
+        .unwrap_or_else(|| "暂无说明".to_string());
+    (title, description)
+}
+
+fn frontmatter_description(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()? != "---" {
+        return None;
+    }
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            return None;
+        }
+        if let Some(value) = trimmed.strip_prefix("description:") {
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            if value == "|" || value == ">-" || value == ">" {
+                let mut collected = Vec::new();
+                for next in lines.by_ref() {
+                    if next.trim() == "---" {
+                        break;
+                    }
+                    if next.starts_with(' ') || next.starts_with('\t') || next.trim().is_empty() {
+                        let cleaned = next.trim();
+                        if !cleaned.is_empty() {
+                            collected.push(cleaned.to_string());
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                let joined = collected.join(" ");
+                return (!joined.is_empty()).then_some(joined);
+            }
+            return (!value.is_empty()).then_some(value.to_string());
+        }
+    }
+    None
+}
+
+fn package_skill_category(name: &str) -> &'static str {
+    match name {
+        "brainstorming" | "office-hours" | "plan-ceo-review" | "storyline" => "产品创意",
+        "ug-num-strategy" | "ug-prd-review-jc-style" | "ab-test-setup" | "experiment-ux-guard" => {
+            "需求编写"
+        }
+        "ui-ux-pro-max" | "design-taste-skill-pack" | "impeccable" => "UI设计",
+        _ => "其他工具",
+    }
+}
+
+fn package_category_order(category: &str) -> usize {
+    match category {
+        "产品创意" => 0,
+        "需求编写" => 1,
+        "UI设计" => 2,
+        "其他工具" => 3,
+        _ => 4,
+    }
+}
+
+fn package_skill_order(name: &str) -> usize {
+    match name {
+        "brainstorming" => 0,
+        "office-hours" => 1,
+        "plan-ceo-review" => 2,
+        "storyline" => 3,
+        "ug-num-strategy" => 4,
+        "ug-prd-review-jc-style" => 5,
+        "ab-test-setup" => 6,
+        "experiment-ux-guard" => 7,
+        "ui-ux-pro-max" => 8,
+        "design-taste-skill-pack" => 9,
+        "impeccable" => 10,
+        "agent-browser" => 11,
+        "find-skills" => 12,
+        "skill-creator" => 13,
+        _ => 99,
+    }
 }
 
 fn run<T>(operation: impl FnOnce() -> Result<T>) -> Result<T, String> {

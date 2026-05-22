@@ -133,4 +133,27 @@ export interface BulkAdoptReport {
   errors: string[];
 }
 
+export interface PackageSkill {
+  id: string;
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  entryPrefix: string;
+  exists: boolean;
+}
+
+export interface SkillPackageScan {
+  packagePath: string;
+  skills: PackageSkill[];
+  ignoredPluginSkills: number;
+}
+
+export interface PackageImportReport {
+  state: AppState;
+  changed: number;
+  skipped: number;
+  errors: string[];
+}
+
 export type ViewKey = "library" | "global" | "projects" | "presets" | "settings";
