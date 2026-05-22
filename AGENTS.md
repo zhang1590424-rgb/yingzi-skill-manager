@@ -26,9 +26,15 @@
   AGENTS.md
   docs/
     YYYY-MM-DD-<主题>-design.md
+  src/
+    前端 React / TypeScript 源码
+  src-tauri/
+    Tauri / Rust 桌面端与本地文件能力
+  public/
+    静态资源
 ```
 
-后续进入实现阶段后，再根据技术栈补充源码目录约定。
+个人 Skill 资产不放在项目源码目录里，统一放在 `~/.skills-manager/skills`。
 
 ## 设计约束
 
@@ -57,3 +63,16 @@
 - Skill 扫描、分发、收回是否符合设计。
 - UI 在常见桌面窗口尺寸下不重叠、不溢出。
 
+常用命令：
+
+```bash
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+npm run tauri:build
+```
+
+打包产物：
+
+```text
+src-tauri/target/release/bundle/macos/技能中枢.app
+```

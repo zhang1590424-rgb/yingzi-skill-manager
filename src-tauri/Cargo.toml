@@ -1,0 +1,29 @@
+[package]
+name = "skill-hub"
+version = "0.1.0"
+description = "技能中枢 - 个人本地 Skill 管理器"
+authors = ["bytedance"]
+license = "UNLICENSED"
+edition = "2021"
+rust-version = "1.77.2"
+default-run = "skill-hub"
+
+[lib]
+name = "skill_hub_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.4", features = [] }
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5.0"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.10.0", features = ["tray-icon"] }
+tauri-plugin-dialog = "2.6.0"
+tauri-plugin-opener = "2.5.0"
+walkdir = "2.5"
+
