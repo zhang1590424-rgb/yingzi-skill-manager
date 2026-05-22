@@ -20,7 +20,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -28,12 +28,12 @@ import {
   addProject,
   adoptSkillFromTarget,
   applyPreset,
-  createSkill,
   deletePreset,
   deleteSkill,
   deploySkill,
   getAppState,
   importSkill,
+  installSkillFromMarket,
   openPath,
   removeProject,
   updateAgentPath,
@@ -82,6 +82,37 @@ const statusTone: Record<SkillStatus, string> = {
   invalid: "warn",
 };
 
+type StatusFilter =
+  | "all"
+  | "issues"
+  | "unmanaged"
+  | "conflict"
+  | "broken"
+  | "disabled"
+  | "enabled";
+
+const statusFilterLabels: Record<StatusFilter, string> = {
+  all: "全部",
+  issues: "有问题",
+  unmanaged: "未入库",
+  conflict: "冲突",
+  broken: "失效",
+  disabled: "未启用",
+  enabled: "已启用",
+};
+
+const statusFilterOrder: StatusFilter[] = [
+  "all",
+  "issues",
+  "unmanaged",
+  "conflict",
+  "broken",
+  "disabled",
+  "enabled",
+];
+
+const skillFilterOrder: StatusFilter[] = ["all", "issues", "enabled", "disabled"];
+
 type Selection =
   | { type: "skill"; id: string }
   | { type: "status"; id: string }
@@ -100,6 +131,29 @@ type PresetDraft = {
   skillIds: string[];
 };
 
+type ImportSkillMode = "local" | "market";
+
+type HealthIssueKind = "conflict" | "broken" | "pathMissing" | "unmanaged" | "invalid";
+
+type HealthIssue = {
+  kind: HealthIssueKind;
+  label: string;
+  count: number;
+  summary: string;
+  filter: StatusFilter;
+  status?: TargetStatus;
+  skill?: Skill;
+};
+
+type ConfirmDialogState = {
+  title: string;
+  message: string;
+  details?: string[];
+  confirmLabel: string;
+  tone: "danger" | "warn";
+  onConfirm: () => Promise<void>;
+} | null;
+
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,14 +162,16 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [view, setView] = useState<ViewKey>("library");
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [selected, setSelected] = useState<Selection | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("codex");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedProjectAgentId, setSelectedProjectAgentId] = useState<string>("codex");
   const [checkedSkillIds, setCheckedSkillIds] = useState<Set<string>>(new Set());
   const [drawer, setDrawer] = useState<DrawerState>(null);
-  const [newSkillOpen, setNewSkillOpen] = useState(false);
+  const [importSkillOpen, setImportSkillOpen] = useState(false);
   const [presetDraft, setPresetDraft] = useState<PresetDraft | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
 
   async function load(showSpinner = false) {
     try {
@@ -124,16 +180,22 @@ export default function App() {
       }
       setError(null);
       const next = await getAppState();
+      const nextAgentId = next.agents.some((agent) => agent.id === selectedAgentId)
+        ? selectedAgentId
+        : next.agents[0]?.id ?? selectedAgentId;
+      const nextProjectAgentId = next.agents.some((agent) => agent.id === selectedProjectAgentId)
+        ? selectedProjectAgentId
+        : next.agents[0]?.id ?? selectedProjectAgentId;
+      const nextProjectId = resolveProjectId(next, selectedProjectId);
       setState(next);
-      if (!selected && next.skills[0]) {
-        setSelected({ type: "skill", id: next.skills[0].id });
-      }
-      if (!selectedProjectId && next.projects[0]) {
-        setSelectedProjectId(next.projects[0].id);
-      }
-      if (!next.agents.some((agent) => agent.id === selectedAgentId) && next.agents[0]) {
-        setSelectedAgentId(next.agents[0].id);
-      }
+      setSelectedAgentId(nextAgentId);
+      setSelectedProjectAgentId(nextProjectAgentId);
+      setSelectedProjectId(nextProjectId);
+      setSelected((current) =>
+        current && selectionBelongsToScope(current, view, next, nextAgentId, nextProjectId, nextProjectAgentId)
+          ? current
+          : defaultSelectionForView(view, next, nextAgentId, nextProjectId, nextProjectAgentId),
+      );
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -153,22 +215,39 @@ export default function App() {
     ];
   }, [state]);
 
+  const healthIssues = useMemo(() => {
+    if (!state) return [];
+    return buildHealthIssues(state);
+  }, [state]);
+
   const selectedSkill = useMemo(() => {
-    if (!state || selected?.type !== "skill") return null;
+    if (!state || view !== "library" || selected?.type !== "skill") return null;
     return state.skills.find((skill) => skill.id === selected.id) ?? null;
-  }, [selected, state]);
+  }, [selected, state, view]);
 
   const selectedStatus = useMemo(() => {
-    if (!selected || selected.type !== "status") return null;
-    return allStatuses.find((status) => status.id === selected.id) ?? null;
-  }, [allStatuses, selected]);
+    if (!selected || selected.type !== "status" || (view !== "global" && view !== "projects")) return null;
+    const status = allStatuses.find((item) => item.id === selected.id) ?? null;
+    if (!status) return null;
+    if (view === "global") {
+      return status.targetKind === "global" && status.agentId === selectedAgentId ? status : null;
+    }
+    if (view === "projects") {
+      return status.targetKind === "project" &&
+        status.projectId === selectedProjectId &&
+        status.agentId === selectedProjectAgentId
+        ? status
+        : null;
+    }
+    return null;
+  }, [allStatuses, selected, selectedAgentId, selectedProjectAgentId, selectedProjectId, view]);
 
   const selectedPreset = useMemo(() => {
-    if (!state || selected?.type !== "preset") return null;
+    if (!state || view !== "presets" || selected?.type !== "preset") return null;
     return state.presets.find((preset) => preset.id === selected.id) ?? null;
-  }, [selected, state]);
+  }, [selected, state, view]);
 
-  const filteredSkills = useMemo(() => {
+  const queriedSkills = useMemo(() => {
     if (!state) return [];
     return state.skills.filter((skill) => matchesQuery(query, [
       skill.displayName,
@@ -178,6 +257,11 @@ export default function App() {
       ...skill.tags,
     ]));
   }, [query, state]);
+
+  const filteredSkills = useMemo(
+    () => queriedSkills.filter((skill) => skillMatchesStatusFilter(skill, statusFilter)),
+    [queriedSkills, statusFilter],
+  );
 
   const globalWorkspace = state?.globalWorkspaces.find(
     (workspace) => workspace.agentId === selectedAgentId,
@@ -191,14 +275,226 @@ export default function App() {
     (workspace) => workspace.agentId === selectedProjectAgentId,
   );
 
+  const queriedGlobalStatuses = useMemo(
+    () => (globalWorkspace?.statuses ?? []).filter((status) =>
+      matchesQuery(query, [
+        status.displayName,
+        status.skillName,
+        status.description,
+        status.targetPath,
+        status.agentName,
+        statusText[status.status],
+      ]),
+    ),
+    [globalWorkspace, query],
+  );
+
+  const filteredGlobalStatuses = useMemo(
+    () => queriedGlobalStatuses.filter((status) => targetStatusMatchesFilter(status, statusFilter)),
+    [queriedGlobalStatuses, statusFilter],
+  );
+
+  const queriedProjectStatuses = useMemo(
+    () => (projectWorkspace?.statuses ?? []).filter((status) =>
+      matchesQuery(query, [
+        status.displayName,
+        status.skillName,
+        status.description,
+        status.targetPath,
+        status.agentName,
+        status.projectName ?? "",
+        statusText[status.status],
+      ]),
+    ),
+    [projectWorkspace, query],
+  );
+
+  const filteredProjectStatuses = useMemo(
+    () => queriedProjectStatuses.filter((status) => targetStatusMatchesFilter(status, statusFilter)),
+    [queriedProjectStatuses, statusFilter],
+  );
+
+  useEffect(() => {
+    if (!state) return;
+    if (view === "library") {
+      if (selected?.type === "skill" && filteredSkills.some((skill) => skill.id === selected.id)) return;
+      setSelected(filteredSkills[0] ? { type: "skill", id: filteredSkills[0].id } : null);
+      return;
+    }
+    if (view === "global") {
+      if (selected?.type === "status" && filteredGlobalStatuses.some((status) => status.id === selected.id)) return;
+      setSelected(filteredGlobalStatuses[0] ? { type: "status", id: filteredGlobalStatuses[0].id } : null);
+      return;
+    }
+    if (view === "projects") {
+      if (selected?.type === "status" && filteredProjectStatuses.some((status) => status.id === selected.id)) return;
+      setSelected(filteredProjectStatuses[0] ? { type: "status", id: filteredProjectStatuses[0].id } : null);
+    }
+  }, [filteredGlobalStatuses, filteredProjectStatuses, filteredSkills, selected, state, view]);
+
+  function selectView(nextView: ViewKey) {
+    setView(nextView);
+    setStatusFilter("all");
+    setSelected(defaultSelectionForView(
+      nextView,
+      state,
+      selectedAgentId,
+      selectedProjectId,
+      selectedProjectAgentId,
+    ));
+  }
+
+  function selectGlobalAgent(agentId: string) {
+    setSelectedAgentId(agentId);
+    setSelected(defaultSelectionForView(
+      "global",
+      state,
+      agentId,
+      selectedProjectId,
+      selectedProjectAgentId,
+    ));
+  }
+
+  function selectProject(projectId: string) {
+    setSelectedProjectId(projectId);
+    setSelected(defaultSelectionForView(
+      "projects",
+      state,
+      selectedAgentId,
+      projectId,
+      selectedProjectAgentId,
+    ));
+  }
+
+  function selectProjectAgent(agentId: string) {
+    setSelectedProjectAgentId(agentId);
+    setSelected(defaultSelectionForView(
+      "projects",
+      state,
+      selectedAgentId,
+      selectedProjectId,
+      agentId,
+    ));
+  }
+
+  function selectHealthIssue(issue: HealthIssue) {
+    setQuery("");
+    setStatusFilter(issue.filter);
+    if (issue.skill) {
+      setView("library");
+      setSelected({ type: "skill", id: issue.skill.id });
+      return;
+    }
+    if (!issue.status) return;
+    if (issue.status.targetKind === "project") {
+      setView("projects");
+      setSelectedProjectId(issue.status.projectId ?? null);
+      setSelectedProjectAgentId(issue.status.agentId);
+    } else {
+      setView("global");
+      setSelectedAgentId(issue.status.agentId);
+    }
+    setSelected({ type: "status", id: issue.status.id });
+  }
+
+  function changeStatusFilter(nextFilter: StatusFilter) {
+    setStatusFilter(nextFilter);
+    if (view === "library") {
+      const skill = queriedSkills.find((item) => skillMatchesStatusFilter(item, nextFilter));
+      setSelected(skill ? { type: "skill", id: skill.id } : null);
+      return;
+    }
+    if (view === "global") {
+      const status = queriedGlobalStatuses.find((item) => targetStatusMatchesFilter(item, nextFilter));
+      setSelected(status ? { type: "status", id: status.id } : null);
+      return;
+    }
+    if (view === "projects") {
+      const status = queriedProjectStatuses.find((item) => targetStatusMatchesFilter(item, nextFilter));
+      setSelected(status ? { type: "status", id: status.id } : null);
+    }
+  }
+
+  function confirmDeleteSkill(skill: Skill, locations: TargetStatus[]) {
+    if (locations.length) {
+      setError(`请先收回 ${locations.length} 个启用位置，再删除主库技能。`);
+      return;
+    }
+    setConfirmDialog({
+      title: `删除技能：${skill.displayName}`,
+      message: "将从主库删除该技能目录。此操作不会保留备份。",
+      details: [skill.path],
+      confirmLabel: "确认删除",
+      tone: "danger",
+      onConfirm: async () => {
+        await runAction(async () => {
+          const next = await deleteSkill(skill.id);
+          setState(next);
+          setSelected(defaultSelectionForView("library", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
+        }, "已删除技能");
+      },
+    });
+  }
+
+  function confirmDeletePreset(preset: Preset) {
+    setConfirmDialog({
+      title: `删除套装：${preset.name}`,
+      message: "将删除这个套装配置，不会删除主库里的技能。",
+      details: preset.skillIds.length ? [`包含 ${preset.skillIds.length} 个技能`] : undefined,
+      confirmLabel: "确认删除",
+      tone: "danger",
+      onConfirm: async () => {
+        await runAction(async () => {
+          const next = await deletePreset(preset.id);
+          setState(next);
+          setSelected(defaultSelectionForView("presets", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
+        }, "已删除套装");
+      },
+    });
+  }
+
+  async function deployLibraryToStatus(skill: Skill, status: TargetStatus) {
+    const apply = async () => {
+      await runAction(async () => {
+        const report = await deploySkill(
+          skill.id,
+          [
+            {
+              agentId: status.agentId,
+              projectId: status.projectId ?? null,
+            },
+          ],
+          true,
+        );
+        await refreshAfterReport(report, "已按主库分发");
+      });
+    };
+
+    if (status.status === "conflict" || status.status === "unmanaged") {
+      setConfirmDialog({
+        title: `用主库覆盖：${status.displayName}`,
+        message: "目标位置已有同名内容，确认后会按主库版本重建软链接。",
+        details: [status.targetPath, `主库：${skill.path}`],
+        confirmLabel: "确认覆盖",
+        tone: "warn",
+        onConfirm: apply,
+      });
+      return;
+    }
+
+    await apply();
+  }
+
   async function runAction(action: () => Promise<void>, success?: string) {
     try {
       setWorking(true);
       setError(null);
       await action();
       if (success) setNotice(success);
+      return true;
     } catch (cause) {
-      setError(String(cause));
+      setError(formatActionError(cause));
+      return false;
     } finally {
       setWorking(false);
     }
@@ -206,19 +502,36 @@ export default function App() {
 
   async function refreshAfterReport(report: OperationReport, successLabel: string) {
     await load();
-    const parts = [`${successLabel}：变更 ${report.changed} 个`];
-    if (report.skipped) parts.push(`跳过 ${report.skipped} 个`);
-    if (report.conflicts.length) parts.push(`冲突 ${report.conflicts.length} 个`);
-    if (report.errors.length) parts.push(`错误 ${report.errors.length} 个`);
-    setNotice(parts.join("，"));
+    const summary = formatOperationReport(report, successLabel);
+    if (report.errors.length) {
+      setError(`${summary}。下一步：检查目标路径、目录权限或设置里的 Agent 路径后重试。${formatReportExamples(report.errors)}`);
+      return;
+    }
+    if (report.conflicts.length) {
+      setNotice(`${summary}。下一步：在列表中筛选“冲突”，确认后可用主库覆盖。`);
+      return;
+    }
+    setNotice(`${summary}。`);
   }
 
-  async function pickAndImportSkill() {
+  async function pickAndImportSkill(onImported?: () => void) {
     const picked = await open({ directory: true, multiple: false, title: "选择技能文件夹" });
     if (!picked || Array.isArray(picked)) return;
-    await runAction(async () => {
-      setState(await importSkill(picked));
-    }, "已导入技能");
+    const imported = await runAction(async () => {
+      const next = await importSkill(picked);
+      const importedId = slugifyClient(fileNameFromPath(picked));
+      const importedSkill = next.skills.find(
+        (skill) => skill.id === importedId || skill.name === importedId,
+      );
+      setState(next);
+      setView("library");
+      setStatusFilter("all");
+      setSelected(importedSkill
+        ? { type: "skill", id: importedSkill.id }
+        : defaultSelectionForView("library", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
+      setNotice(`已导入技能：变更 1 个。下一步可以在右侧分发。`);
+    });
+    if (imported) onImported?.();
   }
 
   async function pickAndAddProject() {
@@ -228,28 +541,49 @@ export default function App() {
       const next = await addProject(picked);
       setState(next);
       const project = next.projects.find((item) => item.path === picked);
-      if (project) setSelectedProjectId(project.id);
+      if (project) {
+        setSelectedProjectId(project.id);
+        setSelected(defaultSelectionForView("projects", next, selectedAgentId, project.id, selectedProjectAgentId));
+      }
     }, "已添加项目");
   }
 
-  async function adoptStatuses(statuses: TargetStatus[]) {
+  function adoptStatuses(statuses: TargetStatus[]) {
     if (!statuses.length) return;
-    const confirmed = window.confirm(
-      `将把 ${statuses.length} 个存量技能导入主库，并把原位置改成指向主库的软链接。此操作按主库优先处理同名技能。`,
-    );
-    if (!confirmed) return;
-    await runAction(async () => {
-      let nextState: AppState | null = null;
-      for (const status of statuses) {
-        nextState = await adoptSkillFromTarget(
-          status.agentId,
-          status.projectId ?? null,
-          status.skillName,
-        );
-      }
-      if (nextState) setState(nextState);
-      await load();
-    }, "已导入存量技能");
+    setConfirmDialog({
+      title: `导入 ${statuses.length} 个存量技能`,
+      message: "将把目标位置的存量技能导入主库，并把原位置改成指向主库的软链接。",
+      details: ["冲突策略：主库优先处理同名技能"],
+      confirmLabel: "确认导入",
+      tone: "warn",
+      onConfirm: async () => {
+        await runAction(async () => {
+          let nextState: AppState | null = null;
+          let changed = 0;
+          const errors: string[] = [];
+          for (const status of statuses) {
+            try {
+              nextState = await adoptSkillFromTarget(
+                status.agentId,
+                status.projectId ?? null,
+                status.skillName,
+              );
+              changed += 1;
+            } catch (cause) {
+              errors.push(`${status.displayName}：${cleanErrorMessage(cause)}`);
+            }
+          }
+          if (nextState) setState(nextState);
+          const report: OperationReport = {
+            changed,
+            skipped: statuses.length - changed - errors.length,
+            conflicts: [],
+            errors,
+          };
+          await refreshAfterReport(report, "已导入存量技能");
+        });
+      },
+    });
   }
 
   function toggleChecked(skillId: string) {
@@ -269,40 +603,42 @@ export default function App() {
 
     if (view === "library") {
       return (
-        <SkillList
-          skills={filteredSkills}
-          selectedId={selected?.type === "skill" ? selected.id : null}
-          checkedIds={checkedSkillIds}
-          onToggleCheck={toggleChecked}
-          onSelect={(skill) => setSelected({ type: "skill", id: skill.id })}
-        />
+        <>
+          <StatusFilterBar
+            value={statusFilter}
+            options={buildSkillFilterOptions(queriedSkills)}
+            onChange={changeStatusFilter}
+          />
+          <SkillList
+            skills={filteredSkills}
+            selectedId={selected?.type === "skill" ? selected.id : null}
+            checkedIds={checkedSkillIds}
+            onToggleCheck={toggleChecked}
+            onSelect={(skill) => setSelected({ type: "skill", id: skill.id })}
+          />
+        </>
       );
     }
 
     if (view === "global") {
-      const statuses = (globalWorkspace?.statuses ?? []).filter((status) =>
-        matchesQuery(query, [
-          status.displayName,
-          status.skillName,
-          status.description,
-          status.targetPath,
-          status.agentName,
-          statusText[status.status],
-        ]),
-      );
       return (
         <>
           <AgentTabs
             agents={state.agents}
             selectedId={selectedAgentId}
-            onSelect={setSelectedAgentId}
+            onSelect={selectGlobalAgent}
+          />
+          <StatusFilterBar
+            value={statusFilter}
+            options={buildStatusFilterOptions(queriedGlobalStatuses)}
+            onChange={changeStatusFilter}
           />
           <ImportExistingToolbar
             statuses={globalWorkspace?.statuses ?? []}
             onImport={adoptStatuses}
           />
           <StatusList
-            statuses={statuses}
+            statuses={filteredGlobalStatuses}
             selectedId={selected?.type === "status" ? selected.id : null}
             onSelect={(status) => setSelected({ type: "status", id: status.id })}
           />
@@ -311,23 +647,12 @@ export default function App() {
     }
 
     if (view === "projects") {
-      const statuses = (projectWorkspace?.statuses ?? []).filter((status) =>
-        matchesQuery(query, [
-          status.displayName,
-          status.skillName,
-          status.description,
-          status.targetPath,
-          status.agentName,
-          status.projectName ?? "",
-          statusText[status.status],
-        ]),
-      );
       return (
         <>
           <ProjectSelector
             projects={state.projects}
             selectedId={selectedProjectId}
-            onSelect={setSelectedProjectId}
+            onSelect={selectProject}
             onAdd={pickAndAddProject}
           />
           {selectedProjectId ? (
@@ -335,14 +660,19 @@ export default function App() {
               <AgentTabs
                 agents={state.agents}
                 selectedId={selectedProjectAgentId}
-                onSelect={setSelectedProjectAgentId}
+                onSelect={selectProjectAgent}
+              />
+              <StatusFilterBar
+                value={statusFilter}
+                options={buildStatusFilterOptions(queriedProjectStatuses)}
+                onChange={changeStatusFilter}
               />
               <ImportExistingToolbar
                 statuses={projectWorkspace?.statuses ?? []}
                 onImport={adoptStatuses}
               />
               <StatusList
-                statuses={statuses}
+                statuses={filteredProjectStatuses}
                 selectedId={selected?.type === "status" ? selected.id : null}
                 onSelect={(status) => setSelected({ type: "status", id: status.id })}
               />
@@ -380,9 +710,25 @@ export default function App() {
         onUpdateAgentPath={(agentId, path) =>
           runAction(async () => setState(await updateAgentPath(agentId, path)), "已更新路径")
         }
-        onRemoveProject={(projectId) =>
-          runAction(async () => setState(await removeProject(projectId)), "已移除项目")
-        }
+        onRemoveProject={(projectId) => {
+          const project = state.projects.find((item) => item.id === projectId);
+          setConfirmDialog({
+            title: `移除项目：${project?.name ?? projectId}`,
+            message: "只会从技能中枢的管理列表移除，不会删除项目目录。",
+            details: project ? [project.path] : undefined,
+            confirmLabel: "确认移除",
+            tone: "warn",
+            onConfirm: async () => {
+              await runAction(async () => {
+                const next = await removeProject(projectId);
+                const nextProjectId = resolveProjectId(next, selectedProjectId === projectId ? null : selectedProjectId);
+                setState(next);
+                setSelectedProjectId(nextProjectId);
+                setSelected(defaultSelectionForView("projects", next, selectedAgentId, nextProjectId, selectedProjectAgentId));
+              }, "已移除项目");
+            },
+          });
+        }}
       />
     );
   }
@@ -407,7 +753,16 @@ export default function App() {
       );
     }
 
-    if (selectedStatus) {
+    const scopedSelectedStatus = selectedStatus && (
+      view === "global"
+        ? filteredGlobalStatuses.some((status) => status.id === selectedStatus.id)
+        : view === "projects"
+          ? filteredProjectStatuses.some((status) => status.id === selectedStatus.id)
+          : false
+    ) ? selectedStatus : null;
+
+    if (scopedSelectedStatus) {
+      const selectedStatus = scopedSelectedStatus;
       const librarySkill = state.skills.find((skill) => skill.id === selectedStatus.skillId);
       return (
         <ContextPanel title={selectedStatus.displayName}>
@@ -425,14 +780,14 @@ export default function App() {
                 disabled={working}
                 onClick={() =>
                   runAction(async () => {
-                    setState(
-                      await adoptSkillFromTarget(
-                        selectedStatus.agentId,
-                        selectedStatus.projectId ?? null,
-                        selectedStatus.skillName,
-                      ),
+                    const next = await adoptSkillFromTarget(
+                      selectedStatus.agentId,
+                      selectedStatus.projectId ?? null,
+                      selectedStatus.skillName,
                     );
-                  }, "已入库并重建软链接")
+                    setState(next);
+                    setNotice("已入库并重建软链接：变更 1 个。下一步可以确认启用位置或继续分发。");
+                  })
                 }
               >
                 <Archive size={16} />
@@ -443,24 +798,12 @@ export default function App() {
               <button
                 className="primary-button"
                 disabled={working}
-                onClick={() =>
-                  runAction(async () => {
-                    const report = await deploySkill(
-                      librarySkill.id,
-                      [
-                        {
-                          agentId: selectedStatus.agentId,
-                          projectId: selectedStatus.projectId ?? null,
-                        },
-                      ],
-                      true,
-                    );
-                    await refreshAfterReport(report, "已按主库分发");
-                  })
-                }
+                onClick={() => void deployLibraryToStatus(librarySkill, selectedStatus)}
               >
                 <Link2 size={16} />
-                用主库覆盖
+                {selectedStatus.status === "conflict" || selectedStatus.status === "unmanaged"
+                  ? "用主库覆盖"
+                  : "分发到此位置"}
               </button>
             ) : null}
             {librarySkill && selectedStatus.status === "enabled" ? (
@@ -493,6 +836,20 @@ export default function App() {
       );
     }
 
+    if (view === "global" || view === "projects") {
+      return (
+        <ContextPanel title={view === "global" ? "全局应用" : "项目应用"}>
+          <EmptyState
+            title={view === "projects" && !selectedProjectId
+              ? "还没有纳入管理的项目"
+              : "当前筛选没有匹配的应用状态"}
+            action={view === "projects" && !selectedProjectId ? "添加项目" : undefined}
+            onAction={view === "projects" && !selectedProjectId ? pickAndAddProject : undefined}
+          />
+        </ContextPanel>
+      );
+    }
+
     if (selectedPreset) {
       return (
         <ContextPanel title={selectedPreset.name}>
@@ -520,12 +877,7 @@ export default function App() {
             <button
               className="danger-button"
               disabled={working}
-              onClick={() =>
-                runAction(async () => {
-                  setState(await deletePreset(selectedPreset.id));
-                  setSelected(null);
-                }, "已删除套装")
-              }
+              onClick={() => confirmDeletePreset(selectedPreset)}
             >
               <Trash2 size={16} />
               删除
@@ -535,8 +887,25 @@ export default function App() {
       );
     }
 
-    const skill = selectedSkill ?? state.skills[0] ?? null;
+    if (view === "presets") {
+      return (
+        <ContextPanel title="技能套装">
+          <EmptyState title="还没有技能套装" action="新建套装" onAction={() => setPresetDraft({ id: null, name: "", description: "", skillIds: [] })} />
+        </ContextPanel>
+      );
+    }
+
+    const skill = selectedSkill && filteredSkills.some((item) => item.id === selectedSkill.id)
+      ? selectedSkill
+      : filteredSkills[0] ?? null;
     if (!skill) {
+      if (state.skills.length) {
+        return (
+          <ContextPanel title="技能主库">
+            <EmptyState title="当前筛选没有匹配的技能" />
+          </ContextPanel>
+        );
+      }
       const unmanaged = state.globalWorkspaces
         .flatMap((workspace) => workspace.statuses)
         .filter((status) => status.status === "unmanaged");
@@ -556,7 +925,7 @@ export default function App() {
               </div>
             </>
           ) : (
-            <EmptyState title="主库里还没有技能" action="新建技能" onAction={() => setNewSkillOpen(true)} />
+            <EmptyState title="主库里还没有技能" action="导入技能" onAction={() => setImportSkillOpen(true)} />
           )}
         </ContextPanel>
       );
@@ -585,12 +954,7 @@ export default function App() {
           <button
             className="danger-button"
             disabled={working}
-            onClick={() =>
-              runAction(async () => {
-                setState(await deleteSkill(skill.id));
-                setSelected(null);
-              }, "已删除技能")
-            }
+            onClick={() => confirmDeleteSkill(skill, locations)}
           >
             <Trash2 size={16} />
             删除
@@ -604,9 +968,14 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-workspace">
+        跳到主内容
+      </a>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">技</div>
+          <div className="brand-mark" aria-hidden="true">
+            <Layers3 size={18} />
+          </div>
           <div>
             <strong>技能中枢</strong>
             <span>本地 Skill 工作台</span>
@@ -619,10 +988,7 @@ export default function App() {
               <button
                 key={item.key}
                 className={view === item.key ? "nav-item active" : "nav-item"}
-                onClick={() => {
-                  setView(item.key);
-                  if (item.key === "settings") setSelected({ type: "settings" });
-                }}
+                onClick={() => selectView(item.key)}
               >
                 <Icon size={17} />
                 {item.label}
@@ -638,14 +1004,15 @@ export default function App() {
         ) : null}
       </aside>
 
-      <main className="main-surface">
+      <main className="main-surface" id="main-workspace">
         <header className="topbar">
-          <div className="search-box">
+          <div className="search-box" role="search">
             <Search size={16} />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索技能、项目、智能体应用或路径"
+              aria-label="搜索技能、项目、智能体应用或路径"
             />
           </div>
           <div className="topbar-actions">
@@ -653,11 +1020,7 @@ export default function App() {
               <RefreshCw size={16} />
               刷新
             </button>
-            <button className="secondary-button" onClick={() => setNewSkillOpen(true)}>
-              <Plus size={16} />
-              新建技能
-            </button>
-            <button className="primary-button" onClick={() => void pickAndImportSkill()}>
+            <button className="primary-button" onClick={() => setImportSkillOpen(true)}>
               <Upload size={16} />
               导入技能
             </button>
@@ -683,6 +1046,13 @@ export default function App() {
           </div>
         ) : null}
 
+        {state ? (
+          <HealthOverview
+            issues={healthIssues}
+            onSelect={selectHealthIssue}
+          />
+        ) : null}
+
         <section className="workspace">
           <div className="list-pane">
             <PaneHeader
@@ -691,9 +1061,9 @@ export default function App() {
                 view === "library"
                   ? filteredSkills.length
                   : view === "global"
-                    ? globalWorkspace?.statuses.length ?? 0
+                    ? filteredGlobalStatuses.length
                     : view === "projects"
-                      ? projectWorkspace?.statuses.length ?? 0
+                      ? filteredProjectStatuses.length
                       : view === "presets"
                         ? state?.presets.length ?? 0
                         : state?.agents.length ?? 0
@@ -763,17 +1133,25 @@ export default function App() {
         />
       ) : null}
 
-      {newSkillOpen ? (
-        <NewSkillDialog
-          onClose={() => setNewSkillOpen(false)}
-          onSubmit={(name, description) =>
+      {importSkillOpen ? (
+        <ImportSkillDialog
+          working={working}
+          onClose={() => setImportSkillOpen(false)}
+          onPickLocal={() => void pickAndImportSkill(() => setImportSkillOpen(false))}
+          onInstallFromMarket={(marketUrl, version) =>
             runAction(async () => {
-              const next = await createSkill(name, description);
+              const next = await installSkillFromMarket(marketUrl, version);
               setState(next);
-              const skill = next.skills.find((item) => item.name === slugifyClient(name));
-              if (skill) setSelected({ type: "skill", id: skill.id });
-              setNewSkillOpen(false);
-            }, "已新建技能")
+              setView("library");
+              setStatusFilter("all");
+              const marketSkillId = marketSkillIdFromUrlClient(marketUrl);
+              const skill = next.skills.find(
+                (item) => item.name === slugifyClient(marketSkillId) || item.id === slugifyClient(marketSkillId),
+              );
+              setSelected(skill ? { type: "skill", id: skill.id } : defaultSelectionForView("library", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
+              setImportSkillOpen(false);
+              setNotice("已从 Skill 市场安装：变更 1 个。下一步可以在右侧分发。");
+            })
           }
         />
       ) : null}
@@ -798,6 +1176,18 @@ export default function App() {
           }
         />
       ) : null}
+
+      {confirmDialog ? (
+        <ConfirmDialog
+          dialog={confirmDialog}
+          working={working}
+          onCancel={() => setConfirmDialog(null)}
+          onConfirm={async () => {
+            await confirmDialog.onConfirm();
+            setConfirmDialog(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -816,6 +1206,77 @@ function PaneHeader({ view, count }: { view: ViewKey; count: number }) {
         <h1>{title[view]}</h1>
         <span>{count} 项</span>
       </div>
+    </div>
+  );
+}
+
+function HealthOverview({
+  issues,
+  onSelect,
+}: {
+  issues: HealthIssue[];
+  onSelect: (issue: HealthIssue) => void;
+}) {
+  const total = issues.reduce((sum, issue) => sum + issue.count, 0);
+  if (!issues.length) {
+    return (
+      <section className="health-overview clean" aria-label="健康总览">
+        <div>
+          <strong>健康总览</strong>
+          <span>当前没有发现冲突、失效链接或路径异常</span>
+        </div>
+        <CheckCircle2 size={16} />
+      </section>
+    );
+  }
+
+  return (
+    <section className="health-overview" aria-label="健康总览">
+      <div className="health-copy">
+        <strong>健康总览</strong>
+        <span>{total} 个问题需要处理</span>
+      </div>
+      <div className="health-actions">
+        {issues.map((issue) => (
+          <button
+            key={issue.kind}
+            type="button"
+            className={`health-chip ${issue.kind}`}
+            onClick={() => onSelect(issue)}
+            title={issue.summary}
+          >
+            <span>{issue.label}</span>
+            <strong>{issue.count}</strong>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function StatusFilterBar({
+  value,
+  options,
+  onChange,
+}: {
+  value: StatusFilter;
+  options: Array<{ id: StatusFilter; label: string; count: number }>;
+  onChange: (filter: StatusFilter) => void;
+}) {
+  return (
+    <div className="status-filter-bar" aria-label="状态筛选">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          className={value === option.id ? "active" : ""}
+          aria-pressed={value === option.id}
+          onClick={() => onChange(option.id)}
+        >
+          {option.label}
+          <span>{option.count}</span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -839,32 +1300,39 @@ function SkillList({
   return (
     <div className="rows">
       {skills.map((skill) => (
-        <button
+        <div
           key={skill.id}
-          className={selectedId === skill.id ? "row selected" : "row"}
-          onClick={() => onSelect(skill)}
+          className={selectedId === skill.id ? "row skill-row selected" : "row skill-row"}
         >
-          <span
-            className="row-check"
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleCheck(skill.id);
-            }}
-            role="checkbox"
+          <button
+            type="button"
+            className="row-check-button"
             aria-checked={checkedIds.has(skill.id)}
-            tabIndex={0}
+            aria-label={`${checkedIds.has(skill.id) ? "取消选择" : "选择"} ${skill.displayName}`}
+            role="checkbox"
+            onClick={() => onToggleCheck(skill.id)}
           >
             {checkedIds.has(skill.id) ? <CheckCircle2 size={16} /> : <Circle size={16} />}
-          </span>
-          <span className="row-main">
-            <strong>{skill.displayName}</strong>
-            <small>{skill.description}</small>
-          </span>
-          <span className="row-meta">
-            {skill.issueCount ? <span className="mini-warn">{skill.issueCount} 个问题</span> : null}
-            <span>{skill.enabledCount} 处启用</span>
-          </span>
-        </button>
+          </button>
+          <button type="button" className="row-content-button" onClick={() => onSelect(skill)}>
+            <span className="row-main">
+              <strong>{skill.displayName}</strong>
+              <small title={skill.description}>{skill.description}</small>
+              {skill.tags.length ? (
+                <span className="row-tags">
+                  {skill.tags.slice(0, 3).map((tag) => (
+                    <span key={tag}>{tag}</span>
+                  ))}
+                  {skill.tags.length > 3 ? <span>+{skill.tags.length - 3}</span> : null}
+                </span>
+              ) : null}
+            </span>
+            <span className="row-meta">
+              {skill.issueCount ? <span className="mini-warn">{skill.issueCount} 个问题</span> : null}
+              <span>{skill.enabledCount} 处启用</span>
+            </span>
+          </button>
+        </div>
       ))}
     </div>
   );
@@ -1027,7 +1495,7 @@ function ProjectSelector({
           </option>
         ))}
       </select>
-      <button className="icon-button" onClick={onAdd} aria-label="添加项目">
+      <button className="icon-button" onClick={onAdd} aria-label="添加项目" title="添加项目">
         <FolderPlus size={17} />
       </button>
     </div>
@@ -1117,11 +1585,19 @@ function DistributionDrawer({
   onApply: (targets: DeployTarget[], overwrite: boolean) => Promise<void>;
   onWithdraw: (targets: DeployTarget[]) => Promise<void>;
 }) {
+  const drawerRef = useDialogFocus<HTMLElement>(onClose);
   const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set());
   const isPreset = drawer?.type === "preset";
+  const preset = drawer?.type === "preset"
+    ? state.presets.find((item) => item.id === drawer.presetId) ?? null
+    : null;
+  const drawerSkillIds = drawer?.type === "skill" ? drawer.skillIds : preset?.skillIds ?? [];
+  const drawerSkills = drawerSkillIds
+    .map((skillId) => state.skills.find((skill) => skill.id === skillId))
+    .filter((skill): skill is Skill => Boolean(skill));
   const title =
     drawer?.type === "preset"
-      ? `应用套装：${state.presets.find((preset) => preset.id === drawer.presetId)?.name ?? ""}`
+      ? `应用套装：${preset?.name ?? ""}`
       : `分发技能：${drawer?.skillIds.length ?? 0} 个`;
 
   const targetRows = [
@@ -1139,7 +1615,32 @@ function DistributionDrawer({
         target: { agentId: agent.id, projectId: project.id },
       })),
     ),
-  ];
+  ].map((row) => {
+    const statuses = drawerSkillIds
+      .map((skillId) => findTargetStatus(state, row.target.agentId, row.target.projectId ?? null, skillId))
+      .filter((status): status is TargetStatus => Boolean(status));
+    const statusLabel = summarizeTargetStatuses(statuses, drawerSkillIds.length);
+    const hasOverwriteRisk = statuses.some((status) => status.status === "conflict" || status.status === "unmanaged");
+    const hasPathRisk = statuses.some((status) => status.status === "broken" || status.status === "pathMissing" || status.status === "invalid");
+    const skillLabel = drawerSkills.length === 1
+      ? drawerSkills[0].displayName
+      : `${drawerSkillIds.length} 个技能`;
+    return {
+      ...row,
+      finalPath: drawerSkills.length === 1
+        ? `${row.path}/${drawerSkills[0].name} -> ${drawerSkills[0].path}`
+        : `${row.path}/{skill-name} -> ${state.skillsRoot}/{skill-name}`,
+      resultLabel: `将 ${skillLabel} 启用到 ${row.label}`,
+      riskLabel: hasOverwriteRisk
+        ? "需要覆盖目标同名内容"
+        : hasPathRisk
+          ? "目标路径存在异常"
+          : "可直接创建软链接",
+      statusLabel,
+      hasOverwriteRisk,
+      hasPathRisk,
+    };
+  });
 
   function toggle(key: string) {
     setSelectedTargets((current) => {
@@ -1154,15 +1655,28 @@ function DistributionDrawer({
     .filter((row) => selectedTargets.has(row.key))
     .map((row) => row.target);
 
+  const selectedRows = targetRows.filter((row) => selectedTargets.has(row.key));
+  const selectedOverwriteRisks = selectedRows.filter((row) => row.hasOverwriteRisk).length;
+  const selectedPathRisks = selectedRows.filter((row) => row.hasPathRisk).length;
+  const shouldOverwrite = selectedOverwriteRisks + selectedPathRisks > 0;
+  const selectedRiskCount = selectedOverwriteRisks + selectedPathRisks;
+  const previewRows = selectedRows.slice(0, 3);
+
   return (
     <div className="drawer-backdrop">
-      <aside className="drawer" aria-label="分发面板">
+      <aside
+        ref={drawerRef}
+        className="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="distribution-title"
+      >
         <header>
           <div>
-            <h2>{title}</h2>
+            <h2 id="distribution-title">{title}</h2>
             <span>选择要启用的全局或项目位置</span>
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="关闭">
+          <button className="icon-button" onClick={onClose} aria-label="关闭" title="关闭">
             <X size={18} />
           </button>
         </header>
@@ -1171,19 +1685,45 @@ function DistributionDrawer({
             <button
               key={row.key}
               className={selectedTargets.has(row.key) ? "target-row selected" : "target-row"}
+              aria-pressed={selectedTargets.has(row.key)}
               onClick={() => toggle(row.key)}
             >
               {selectedTargets.has(row.key) ? <CheckCircle2 size={16} /> : <Circle size={16} />}
               <span>
                 <strong>{row.label}</strong>
-                <small>{row.path}</small>
+                <small className="target-result">{row.resultLabel}</small>
+                <small className={row.hasOverwriteRisk || row.hasPathRisk ? "target-risk" : "target-status"}>
+                  当前：{row.statusLabel} · {row.riskLabel}
+                </small>
+                <code>{row.finalPath}</code>
               </span>
             </button>
           ))}
         </div>
-        <div className="overwrite-line">
-          <AlertTriangle size={16} />
-          主库优先：确认后会覆盖目标位置的同名内容。
+        <div className={selectedRiskCount ? "preflight-box warn" : "preflight-box"}>
+          <div className="preflight-summary">
+            {selectedRiskCount ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+            <strong>分发预检</strong>
+            <span>已选 {targets.length} 个目标</span>
+            <span>会覆盖 {selectedOverwriteRisks} 个</span>
+            <span>异常路径 {selectedPathRisks} 个</span>
+          </div>
+          {previewRows.length ? (
+            <div className="preflight-paths">
+              {previewRows.map((row) => (
+                <code key={row.key}>{row.finalPath}</code>
+              ))}
+              {selectedRows.length > previewRows.length ? (
+                <small>另有 {selectedRows.length - previewRows.length} 个目标将在确认后处理</small>
+              ) : null}
+            </div>
+          ) : (
+            <p>选择目标后会在这里展示最终软链接路径。</p>
+          )}
+          <p>
+            确认后只创建或更新目标软链接，不会修改主库内容
+            {selectedRiskCount ? "；冲突位置会按主库优先处理。" : "。"}
+          </p>
         </div>
         <footer>
           {isPreset ? (
@@ -1195,9 +1735,9 @@ function DistributionDrawer({
           <button className="ghost-button" onClick={onClose}>
             取消
           </button>
-          <button className="primary-button" disabled={!targets.length} onClick={() => void onApply(targets, true)}>
+          <button className="primary-button" disabled={!targets.length} onClick={() => void onApply(targets, shouldOverwrite)}>
             <Link2 size={16} />
-            确认分发
+            {shouldOverwrite ? "覆盖并分发" : "确认分发"}
           </button>
         </footer>
       </aside>
@@ -1205,45 +1745,119 @@ function DistributionDrawer({
   );
 }
 
-function NewSkillDialog({
+function ImportSkillDialog({
   onClose,
-  onSubmit,
+  onPickLocal,
+  onInstallFromMarket,
+  working,
 }: {
   onClose: () => void;
-  onSubmit: (name: string, description: string) => void;
+  onPickLocal: () => void;
+  onInstallFromMarket: (marketUrl: string, version: string) => void;
+  working: boolean;
 }) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+  const [mode, setMode] = useState<ImportSkillMode>("local");
+  const [marketUrl, setMarketUrl] = useState("");
+  const [version, setVersion] = useState("");
+  const [marketTouched, setMarketTouched] = useState(false);
+  const dialogRef = useDialogFocus<HTMLFormElement>(onClose);
+  const marketError = validateMarketSkillUrl(marketUrl);
+  const showMarketError = mode === "market" && marketTouched && Boolean(marketError);
+
   return (
     <div className="dialog-backdrop">
       <form
-        className="dialog"
+        ref={dialogRef}
+        className="dialog import-skill-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-skill-title"
         onSubmit={(event) => {
           event.preventDefault();
-          onSubmit(name, description);
+          if (mode === "market") {
+            setMarketTouched(true);
+            if (marketError) return;
+            onInstallFromMarket(marketUrl.trim(), version.trim());
+          }
         }}
       >
         <header>
-          <h2>新建技能</h2>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭">
+          <h2 id="import-skill-title">导入技能</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭">
             <X size={18} />
           </button>
         </header>
-        <label>
-          技能名称
-          <input value={name} onChange={(event) => setName(event.target.value)} required />
-        </label>
-        <label>
-          描述
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
-        </label>
+        <div className="dialog-segmented" aria-label="选择技能来源">
+          <button
+            type="button"
+            className={mode === "local" ? "active" : ""}
+            onClick={() => setMode("local")}
+          >
+            本地文件夹
+          </button>
+          <button
+            type="button"
+            className={mode === "market" ? "active" : ""}
+            onClick={() => setMode("market")}
+          >
+            市场链接
+          </button>
+        </div>
+        {mode === "local" ? (
+          <div className="import-source-panel">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={working}
+              onClick={onPickLocal}
+            >
+              <FolderPlus size={16} />
+              选择技能文件夹
+            </button>
+            <p className="field-note">需要选择包含 SKILL.md 的文件夹。</p>
+          </div>
+        ) : (
+          <>
+            <label>
+              市场链接
+              <input
+                value={marketUrl}
+                onChange={(event) => setMarketUrl(event.target.value)}
+                onBlur={() => setMarketTouched(true)}
+                placeholder="https://skills.bytedance.net/skill/skills:..."
+                aria-invalid={showMarketError}
+                aria-describedby={showMarketError ? "market-url-error" : "market-url-note"}
+                required
+              />
+            </label>
+            {showMarketError ? (
+              <p id="market-url-error" className="field-error" role="alert">{marketError}</p>
+            ) : null}
+            <label>
+              版本号
+              <input
+                value={version}
+                onChange={(event) => setVersion(event.target.value)}
+                placeholder="留空安装最新版本"
+              />
+            </label>
+            <p id="market-url-note" className="field-note">只支持公司 Skill 市场详情链接；安装结果会先进入主库，分发位置仍由你单独选择。</p>
+          </>
+        )}
         <footer>
           <button type="button" className="ghost-button" onClick={onClose}>
             取消
           </button>
-          <button type="submit" className="primary-button">
-            创建
-          </button>
+          {mode === "market" ? (
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={working || Boolean(marketError)}
+            >
+              <Globe2 size={16} />
+              安装
+            </button>
+          ) : null}
         </footer>
       </form>
     </div>
@@ -1262,6 +1876,7 @@ function PresetDialog({
   onSubmit: (draft: PresetDraft) => void;
 }) {
   const [next, setNext] = useState(draft);
+  const dialogRef = useDialogFocus<HTMLFormElement>(onClose);
   function toggle(skillId: string) {
     setNext((current) => ({
       ...current,
@@ -1274,15 +1889,19 @@ function PresetDialog({
   return (
     <div className="dialog-backdrop">
       <form
+        ref={dialogRef}
         className="dialog wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="preset-dialog-title"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit(next);
         }}
       >
         <header>
-          <h2>{draft.id ? "编辑技能套装" : "新建技能套装"}</h2>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭">
+          <h2 id="preset-dialog-title">{draft.id ? "编辑技能套装" : "新建技能套装"}</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭">
             <X size={18} />
           </button>
         </header>
@@ -1330,6 +1949,61 @@ function PresetDialog({
   );
 }
 
+function ConfirmDialog({
+  dialog,
+  working,
+  onCancel,
+  onConfirm,
+}: {
+  dialog: NonNullable<ConfirmDialogState>;
+  working: boolean;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const dialogRef = useDialogFocus<HTMLDivElement>(onCancel);
+  return (
+    <div className="dialog-backdrop">
+      <div
+        ref={dialogRef}
+        className="dialog confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+      >
+        <header>
+          <h2 id="confirm-dialog-title">{dialog.title}</h2>
+          <button type="button" className="icon-button" onClick={onCancel} aria-label="关闭" title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="confirm-body">
+          <p>{dialog.message}</p>
+          {dialog.details?.length ? (
+            <div className="confirm-details">
+              {dialog.details.map((detail) => (
+                <code key={detail}>{detail}</code>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <footer>
+          <button type="button" className="ghost-button" onClick={onCancel}>
+            取消
+          </button>
+          <button
+            type="button"
+            className={dialog.tone === "danger" ? "danger-button" : "primary-button"}
+            disabled={working}
+            onClick={() => void onConfirm()}
+          >
+            {dialog.confirmLabel}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function StatusPill({ status }: { status: SkillStatus }) {
   return (
     <span className={`status-pill ${statusTone[status]}`}>
@@ -1360,11 +2034,29 @@ function TagRow({ tags }: { tags: string[] }) {
 }
 
 function SkillPreview({ skill }: { skill: Skill }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = trimMarkdownPreview(skill.contentPreview, expanded ? 4_000 : 1_200);
+  const canExpand = skill.contentPreview.length > preview.length;
+
   return (
     <div className="markdown-preview">
-      <h3>SKILL.md</h3>
+      <div className="preview-title-row">
+        <h3>SKILL.md 正文预览</h3>
+        {canExpand || expanded ? (
+          <button type="button" className="ghost-button compact" onClick={() => setExpanded((current) => !current)}>
+            {expanded ? "收起" : "展开"}
+          </button>
+        ) : null}
+      </div>
       {skill.contentPreview ? (
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{skill.contentPreview}</ReactMarkdown>
+        <>
+          <div className={expanded ? "markdown-preview-body expanded" : "markdown-preview-body"}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{preview}</ReactMarkdown>
+          </div>
+          {canExpand && !expanded ? (
+            <p className="preview-note">已隐藏后续正文，展开后可继续查看摘要内容。</p>
+          ) : null}
+        </>
       ) : (
         <p className="muted-text">没有可预览内容</p>
       )}
@@ -1458,6 +2150,119 @@ function matchesQuery(query: string, values: string[]) {
   return values.some((value) => value.toLowerCase().includes(normalized));
 }
 
+function trimMarkdownPreview(value: string, limit: number) {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit).trimEnd()}\n\n...`;
+}
+
+function buildHealthIssues(state: AppState): HealthIssue[] {
+  const statuses = [
+    ...state.globalWorkspaces.flatMap((workspace) => workspace.statuses),
+    ...state.projectWorkspaces.flatMap((workspace) => workspace.statuses),
+  ];
+  const invalidSkills = state.skills.filter((skill) => !skill.hasSkillMd);
+
+  const groups: Array<{
+    kind: HealthIssueKind;
+    label: string;
+    filter: StatusFilter;
+    statuses?: TargetStatus[];
+    skills?: Skill[];
+  }> = [
+    {
+      kind: "conflict",
+      label: "冲突",
+      filter: "conflict",
+      statuses: statuses.filter((status) => status.status === "conflict"),
+    },
+    {
+      kind: "broken",
+      label: "失效链接",
+      filter: "broken",
+      statuses: statuses.filter((status) => status.status === "broken"),
+    },
+    {
+      kind: "pathMissing",
+      label: "路径不存在",
+      filter: "broken",
+      statuses: statuses.filter((status) => status.status === "pathMissing"),
+    },
+    {
+      kind: "unmanaged",
+      label: "未入库",
+      filter: "unmanaged",
+      statuses: statuses.filter((status) => status.status === "unmanaged"),
+    },
+    {
+      kind: "invalid",
+      label: "格式异常",
+      filter: "issues",
+      statuses: statuses.filter((status) => status.status === "invalid"),
+      skills: invalidSkills,
+    },
+  ];
+
+  const issues: HealthIssue[] = [];
+  for (const group of groups) {
+    const count = (group.statuses?.length ?? 0) + (group.skills?.length ?? 0);
+    if (!count) continue;
+    const firstStatus = group.statuses?.[0];
+    const firstSkill = group.skills?.[0];
+    const target = firstStatus
+      ? `${firstStatus.projectName ? `${firstStatus.projectName} / ` : ""}${firstStatus.agentName} / ${firstStatus.displayName}`
+      : firstSkill?.displayName ?? "";
+    issues.push({
+      kind: group.kind,
+      label: group.label,
+      count,
+      filter: group.filter,
+      status: firstStatus,
+      skill: firstStatus ? undefined : firstSkill,
+      summary: `${group.label} ${count} 个${target ? `，先处理：${target}` : ""}`,
+    });
+  }
+  return issues;
+}
+
+function buildSkillFilterOptions(skills: Skill[]) {
+  return skillFilterOrder.map((id) => ({
+    id,
+    label: statusFilterLabels[id],
+    count: skills.filter((skill) => skillMatchesStatusFilter(skill, id)).length,
+  }));
+}
+
+function buildStatusFilterOptions(statuses: TargetStatus[]) {
+  return statusFilterOrder.map((id) => ({
+    id,
+    label: statusFilterLabels[id],
+    count: statuses.filter((status) => targetStatusMatchesFilter(status, id)).length,
+  }));
+}
+
+function skillMatchesStatusFilter(skill: Skill, filter: StatusFilter) {
+  if (filter === "all") return true;
+  if (filter === "issues") return skill.issueCount > 0 || !skill.hasSkillMd;
+  if (filter === "enabled") return skill.enabledCount > 0;
+  if (filter === "disabled") return skill.enabledCount === 0;
+  return false;
+}
+
+function targetStatusMatchesFilter(status: TargetStatus, filter: StatusFilter) {
+  if (filter === "all") return true;
+  if (filter === "issues") return isProblemStatus(status.status);
+  if (filter === "broken") return status.status === "broken" || status.status === "pathMissing";
+  return status.status === filter;
+}
+
+function isProblemStatus(status: SkillStatus) {
+  return status === "unmanaged"
+    || status === "conflict"
+    || status === "broken"
+    || status === "pathMissing"
+    || status === "invalid";
+}
+
 function mergeReport(left: OperationReport, right: OperationReport): OperationReport {
   return {
     changed: left.changed + right.changed,
@@ -1465,6 +2270,176 @@ function mergeReport(left: OperationReport, right: OperationReport): OperationRe
     conflicts: [...left.conflicts, ...right.conflicts],
     errors: [...left.errors, ...right.errors],
   };
+}
+
+function formatOperationReport(report: OperationReport, label: string) {
+  const parts = [`${label}：变更 ${report.changed} 个`];
+  parts.push(`跳过 ${report.skipped} 个`);
+  parts.push(`冲突 ${report.conflicts.length} 个`);
+  parts.push(`错误 ${report.errors.length} 个`);
+  return parts.join("，");
+}
+
+function formatReportExamples(values: string[]) {
+  if (!values.length) return "";
+  return ` 示例：${values.slice(0, 2).join("；")}`;
+}
+
+function cleanErrorMessage(cause: unknown) {
+  return String(cause).replace(/^Error:\s*/i, "").trim();
+}
+
+function formatActionError(cause: unknown) {
+  const message = cleanErrorMessage(cause);
+  return `${message}。下一步：检查输入内容、目标路径和目录权限后重试；如果是市场安装失败，确认公司网络和登录状态。`;
+}
+
+function fileNameFromPath(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function defaultSelectionForView(
+  view: ViewKey,
+  state: AppState | null,
+  agentId: string,
+  projectId: string | null,
+  projectAgentId: string,
+): Selection | null {
+  if (!state) return null;
+  if (view === "library") {
+    return state.skills[0] ? { type: "skill", id: state.skills[0].id } : null;
+  }
+  if (view === "global") {
+    const status = state.globalWorkspaces.find((workspace) => workspace.agentId === agentId)?.statuses[0];
+    return status ? { type: "status", id: status.id } : null;
+  }
+  if (view === "projects") {
+    const resolvedProjectId = resolveProjectId(state, projectId);
+    const status = state.projectWorkspaces.find(
+      (workspace) => workspace.projectId === resolvedProjectId && workspace.agentId === projectAgentId,
+    )?.statuses[0];
+    return status ? { type: "status", id: status.id } : null;
+  }
+  if (view === "presets") {
+    return state.presets[0] ? { type: "preset", id: state.presets[0].id } : null;
+  }
+  return { type: "settings" };
+}
+
+function resolveProjectId(state: AppState, currentProjectId: string | null) {
+  if (currentProjectId && state.projects.some((project) => project.id === currentProjectId)) {
+    return currentProjectId;
+  }
+  return state.projects[0]?.id ?? null;
+}
+
+function selectionBelongsToScope(
+  selection: Selection,
+  view: ViewKey,
+  state: AppState,
+  agentId: string,
+  projectId: string | null,
+  projectAgentId: string,
+) {
+  if (view === "library") {
+    return selection.type === "skill" && state.skills.some((skill) => skill.id === selection.id);
+  }
+  if (view === "global") {
+    const workspace = state.globalWorkspaces.find((item) => item.agentId === agentId);
+    return selection.type === "status" && Boolean(
+      workspace?.statuses.some((status) => status.id === selection.id),
+    );
+  }
+  if (view === "projects") {
+    if (!projectId) return false;
+    const workspace = state.projectWorkspaces.find(
+      (item) => item.projectId === projectId && item.agentId === projectAgentId,
+    );
+    return selection.type === "status" && Boolean(
+      workspace?.statuses.some((status) => status.id === selection.id),
+    );
+  }
+  if (view === "presets") {
+    return selection.type === "preset" && state.presets.some((preset) => preset.id === selection.id);
+  }
+  return selection.type === "settings";
+}
+
+function findTargetStatus(
+  state: AppState,
+  agentId: string,
+  projectId: string | null,
+  skillId: string,
+) {
+  const workspace = projectId
+    ? state.projectWorkspaces.find((item) => item.agentId === agentId && item.projectId === projectId)
+    : state.globalWorkspaces.find((item) => item.agentId === agentId);
+  return workspace?.statuses.find((status) => status.skillId === skillId) ?? null;
+}
+
+function summarizeTargetStatuses(statuses: TargetStatus[], expectedCount: number) {
+  if (!statuses.length) return "未发现当前状态";
+  if (expectedCount === 1) return statusText[statuses[0].status];
+  const counts = statuses.reduce<Record<string, number>>((acc, status) => {
+    acc[statusText[status.status]] = (acc[statusText[status.status]] ?? 0) + 1;
+    return acc;
+  }, {});
+  return Object.entries(counts)
+    .map(([label, count]) => `${label} ${count}`)
+    .join("，");
+}
+
+function useDialogFocus<T extends HTMLElement>(onClose: () => void) {
+  const ref = useRef<T>(null);
+
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const getFocusable = () => Array.from(root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )).filter((element) => !element.hasAttribute("disabled") && element.offsetParent !== null);
+
+    requestAnimationFrame(() => {
+      getFocusable()[0]?.focus();
+    });
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = getFocusable();
+      if (!focusable.length) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    root.addEventListener("keydown", handleKeyDown);
+    return () => {
+      root.removeEventListener("keydown", handleKeyDown);
+      if (previousFocus && document.contains(previousFocus)) {
+        previousFocus.focus();
+      }
+    };
+  }, [onClose]);
+
+  return ref;
 }
 
 function skillNames(preset: Preset, skills: Skill[]) {
@@ -1480,4 +2455,29 @@ function slugifyClient(value: string) {
     .replace(/[\\/:\.\s]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || value;
+}
+
+function marketSkillIdFromUrlClient(value: string) {
+  const tail = value.trim().split("/skill/skills:")[1];
+  if (!tail) return "";
+  const pathPart = tail.split(/[?#]/)[0].split("/-/")[0].replace(/\/+$/, "");
+  const parts = pathPart.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
+function validateMarketSkillUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "请粘贴公司 Skill 市场的技能详情链接。";
+  try {
+    const url = new URL(trimmed);
+    if (url.hostname !== "skills.bytedance.net") {
+      return "只支持 skills.bytedance.net 的技能详情链接。";
+    }
+    if (!url.pathname.includes("/skill/skills:") || !marketSkillIdFromUrlClient(trimmed)) {
+      return "链接需要包含 /skill/skills:... 的技能详情路径。";
+    }
+    return null;
+  } catch {
+    return "链接格式不正确，请粘贴完整的 https://skills.bytedance.net/skill/skills:... 链接。";
+  }
 }

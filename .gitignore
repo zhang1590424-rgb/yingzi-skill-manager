@@ -3,6 +3,7 @@ dist/
 dist-ssr/
 src-tauri/target/
 src-tauri/gen/
+/技能中枢.app/
 .DS_Store
 *.log
 .env

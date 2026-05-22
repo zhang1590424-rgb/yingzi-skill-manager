@@ -16,6 +16,17 @@ export async function importSkill(sourcePath: string): Promise<AppState> {
   return invoke<AppState>("import_skill", { sourcePath });
 }
 
+export async function installSkillFromMarket(
+  marketUrl: string,
+  version: string,
+): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState(marketUrl, version);
+  return invoke<AppState>("install_skill_from_market", {
+    marketUrl,
+    version: version.trim() ? version.trim() : null,
+  });
+}
+
 export async function deleteSkill(skillId: string): Promise<AppState> {
   if (!isTauriRuntime()) return mockState(skillId);
   return invoke<AppState>("delete_skill", { skillId });
@@ -167,8 +178,7 @@ function mockState(..._values: string[]): AppState {
       tags: ["开发", "质量"],
       enabledCount: 3,
       issueCount: 0,
-      contentPreview:
-        "---\nname: code-review\ndescription: 检查代码变更里的逻辑、健壮性、性能和测试风险。\n---\n\n# 代码审查\n\n用于在提交前检查代码质量和隐藏风险。",
+      contentPreview: "# 代码审查\n\n用于在提交前检查代码质量和隐藏风险。",
     },
     {
       id: "product-research",
@@ -180,8 +190,7 @@ function mockState(..._values: string[]): AppState {
       tags: ["产品", "知识管理"],
       enabledCount: 1,
       issueCount: 1,
-      contentPreview:
-        "---\nname: product-research\ndescription: 整理竞品、用户场景和需求判断。\n---\n\n# 产品调研\n\n输出事实、推测和下一步建议。",
+      contentPreview: "# 产品调研\n\n输出事实、推测和下一步建议。",
     },
     {
       id: "session-wrap-up",
@@ -193,8 +202,7 @@ function mockState(..._values: string[]): AppState {
       tags: ["文档"],
       enabledCount: 2,
       issueCount: 0,
-      contentPreview:
-        "---\nname: session-wrap-up\ndescription: 把实质性改动同步到项目文档和长期记忆。\n---\n\n# 会话收尾\n\n整理变更、规则和后续注意事项。",
+      contentPreview: "# 会话收尾\n\n整理变更、规则和后续注意事项。",
     },
   ];
   const globalWorkspaces = agents.map((agent) => ({

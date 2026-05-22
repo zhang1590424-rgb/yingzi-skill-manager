@@ -11,6 +11,7 @@ pub fn run() {
             commands::get_app_state,
             commands::create_skill,
             commands::import_skill,
+            commands::install_skill_from_market,
             commands::delete_skill,
             commands::deploy_skill,
             commands::withdraw_skill,

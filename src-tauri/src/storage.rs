@@ -203,8 +203,9 @@ impl Store {
             }
         }
         for skill in &mut skills {
+            let local_issue_count = skill.issue_count;
             skill.enabled_count = *enabled_counts.get(&skill.id).unwrap_or(&0);
-            skill.issue_count = *issue_counts.get(&skill.id).unwrap_or(&0);
+            skill.issue_count = local_issue_count + *issue_counts.get(&skill.id).unwrap_or(&0);
         }
 
         self.persist_deployments(&all_statuses)?;
@@ -319,6 +320,7 @@ impl Store {
                 String::new()
             };
             let metadata = parse_skill_metadata(&id, &content);
+            let content_preview = build_content_preview(&content);
             skills.push(Skill {
                 id: id.clone(),
                 name: id,
@@ -329,7 +331,7 @@ impl Store {
                 tags: metadata.tags,
                 enabled_count: 0,
                 issue_count: if has_skill_md { 0 } else { 1 },
-                content_preview: content,
+                content_preview,
             });
         }
 
@@ -684,52 +686,179 @@ fn parse_skill_metadata(fallback_name: &str, content: &str) -> SkillMetadata {
     let mut description = String::new();
     let mut tags = Vec::new();
 
-    let trimmed = content.trim_start();
-    if trimmed.starts_with("---") {
-        let mut lines = trimmed.lines();
-        let _ = lines.next();
-        for line in lines {
-            if line.trim() == "---" {
-                break;
+    let (frontmatter, body) = split_frontmatter(content);
+    let readable_body = remove_preview_noise(&body);
+    if let Some(frontmatter) = frontmatter {
+        let mut collecting: Option<&str> = None;
+        let mut description_lines: Vec<String> = Vec::new();
+        let mut tag_lines: Vec<String> = Vec::new();
+
+        for line in frontmatter.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                if collecting == Some("description") {
+                    description_lines.push(String::new());
+                }
+                continue;
             }
-            if let Some((key, value)) = line.split_once(':') {
-                let key = key.trim();
-                let value = value.trim().trim_matches('"').trim_matches('\'');
-                match key {
-                    "name" => display_name = value.to_string(),
-                    "description" => description = value.to_string(),
-                    "tags" => {
-                        tags = value
-                            .trim_matches('[')
-                            .trim_matches(']')
-                            .split(',')
-                            .map(|tag| tag.trim().trim_matches('"').trim_matches('\'').to_string())
-                            .filter(|tag| !tag.is_empty())
-                            .collect();
+
+            let is_top_level = !line.starts_with(' ') && !line.starts_with('\t');
+            if is_top_level {
+                if let Some((key, value)) = trimmed.split_once(':') {
+                    let key = key.trim();
+                    let value = value.trim();
+                    collecting = None;
+                    match key {
+                        "name" => {
+                            let value = clean_frontmatter_scalar(value);
+                            if !value.is_empty() {
+                                display_name = value;
+                            }
+                        }
+                        "description" => {
+                            if value.is_empty() || value.starts_with('|') || value.starts_with('>') {
+                                collecting = Some("description");
+                                description_lines.clear();
+                            } else {
+                                description = clean_frontmatter_scalar(value);
+                            }
+                        }
+                        "tags" => {
+                            if value.is_empty() {
+                                collecting = Some("tags");
+                                tag_lines.clear();
+                            } else {
+                                tags = parse_inline_tags(value);
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                    continue;
                 }
             }
+
+            match collecting {
+                Some("description") => description_lines.push(trimmed.to_string()),
+                Some("tags") => tag_lines.push(trimmed.to_string()),
+                _ => {}
+            }
+        }
+
+        if description.is_empty() && !description_lines.is_empty() {
+            description = compact_text(&description_lines.join(" "));
+        }
+        if tags.is_empty() && !tag_lines.is_empty() {
+            tags = parse_tag_lines(&tag_lines);
         }
     }
 
-    if description.is_empty() {
-        description = content
-            .lines()
-            .find(|line| {
-                let trimmed = line.trim();
-                !trimmed.is_empty() && !trimmed.starts_with('#') && trimmed != "---"
-            })
-            .unwrap_or("暂无描述")
-            .trim()
-            .to_string();
+    if description.is_empty() || matches!(description.as_str(), "|" | ">") {
+        description = first_meaningful_line(&readable_body).unwrap_or_else(|| "暂无描述".to_string());
     }
 
     SkillMetadata {
         display_name,
-        description,
+        description: compact_text(&description),
         tags,
     }
+}
+
+fn split_frontmatter(content: &str) -> (Option<String>, String) {
+    let trimmed = content.trim_start();
+    let mut lines = trimmed.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return (None, content.trim().to_string());
+    }
+
+    let mut frontmatter = Vec::new();
+    for line in &mut lines {
+        if line.trim() == "---" {
+            return (
+                Some(frontmatter.join("\n")),
+                lines.collect::<Vec<_>>().join("\n").trim().to_string(),
+            );
+        }
+        frontmatter.push(line);
+    }
+
+    (None, content.trim().to_string())
+}
+
+fn build_content_preview(content: &str) -> String {
+    const PREVIEW_LIMIT: usize = 4_000;
+    let (_, body) = split_frontmatter(content);
+    let body = remove_preview_noise(&body);
+    if body.chars().count() <= PREVIEW_LIMIT {
+        return body;
+    }
+
+    let mut preview = body.chars().take(PREVIEW_LIMIT).collect::<String>();
+    preview.push_str("\n\n...");
+    preview
+}
+
+fn remove_preview_noise(value: &str) -> String {
+    let mut text = value.to_string();
+    const TELEMETRY_START: &str = "<!-- @telemetry:start -->";
+    const TELEMETRY_END: &str = "<!-- @telemetry:end -->";
+
+    while let Some(start) = text.find(TELEMETRY_START) {
+        let Some(relative_end) = text[start..].find(TELEMETRY_END) else {
+            break;
+        };
+        let end = start + relative_end + TELEMETRY_END.len();
+        text.replace_range(start..end, "");
+    }
+
+    text
+        .replace(TELEMETRY_START, "")
+        .replace(TELEMETRY_END, "")
+        .trim()
+        .to_string()
+}
+
+fn clean_frontmatter_scalar(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
+fn compact_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn first_meaningful_line(body: &str) -> Option<String> {
+    body.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#') && *line != "---")
+        .map(compact_text)
+}
+
+fn parse_inline_tags(value: &str) -> Vec<String> {
+    let value = clean_frontmatter_scalar(value);
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(&value);
+    inner
+        .split(',')
+        .map(clean_frontmatter_scalar)
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
+fn parse_tag_lines(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            let value = line.trim().trim_start_matches('-').trim();
+            let value = clean_frontmatter_scalar(value);
+            (!value.is_empty()).then_some(value)
+        })
+        .collect()
 }
 
 fn load_preset_skills(conn: &Connection, preset_id: &str) -> rusqlite::Result<Vec<String>> {
