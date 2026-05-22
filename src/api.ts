@@ -130,10 +130,10 @@ export async function detectDefaultAgents(): Promise<DetectedAgent[]> {
   if (!isTauriRuntime()) {
     return [
       {
-        id: "trae",
-        name: "Trae",
-        globalPath: "/Users/mock/.trae/skills",
-        projectRelativePath: ".trae/skills",
+        id: "trae-cn",
+        name: "Trae CN",
+        globalPath: "/Users/mock/.trae-cn/skills",
+        projectRelativePath: ".trae-cn/skills",
         exists: true,
       },
       {
@@ -149,6 +149,13 @@ export async function detectDefaultAgents(): Promise<DetectedAgent[]> {
         globalPath: "/Users/mock/.claude/skills",
         projectRelativePath: ".claude/skills",
         exists: false,
+      },
+      {
+        id: "aiden",
+        name: "Aiden",
+        globalPath: "/Users/mock/.aiden/skills",
+        projectRelativePath: ".aiden/skills",
+        exists: true,
       },
     ];
   }
@@ -193,12 +200,12 @@ function mockReport(changed = 1): OperationReport {
 function mockState(..._values: string[]): AppState {
   const agents = [
     {
-      id: "trae",
-      name: "Trae",
-      globalPath: "/Users/bytedance/.trae/skills",
-      projectRelativePath: ".trae/skills",
+      id: "trae-cn",
+      name: "Trae CN",
+      globalPath: "/Users/bytedance/.trae-cn/skills",
+      projectRelativePath: ".trae-cn/skills",
       enabled: true,
-      pathExists: false,
+      pathExists: true,
     },
     {
       id: "codex",
@@ -215,6 +222,14 @@ function mockState(..._values: string[]): AppState {
       projectRelativePath: ".claude/skills",
       enabled: true,
       pathExists: true,
+    },
+    {
+      id: "aiden",
+      name: "Aiden",
+      globalPath: "/Users/bytedance/.aiden/skills",
+      projectRelativePath: ".aiden/skills",
+      enabled: true,
+      pathExists: false,
     },
   ];
   const projects = [
@@ -285,10 +300,10 @@ function mockState(..._values: string[]): AppState {
       agentName: agent.name,
       projectId: null,
       projectName: null,
-      status: index === 1 && agent.id === "trae" ? "conflict" as const : index === 2 ? "disabled" as const : "enabled" as const,
+      status: index === 1 && agent.id === "trae-cn" ? "conflict" as const : index === 2 ? "disabled" as const : "enabled" as const,
       targetPath: `${agent.globalPath}/${skill.name}`,
       linkTarget: index === 2 ? null : skill.path,
-      issue: index === 1 && agent.id === "trae" ? "目标位置已有同名内容" : null,
+      issue: index === 1 && agent.id === "trae-cn" ? "目标位置已有同名内容" : null,
       rootExists: agent.pathExists,
     })),
   }));
@@ -339,6 +354,6 @@ function mockState(..._values: string[]): AppState {
         skillIds: ["code-review", "session-wrap-up"],
       },
     ],
-    issues: ["Trae / 全局 / 产品调研：目标位置已有同名内容"],
+    issues: ["Trae CN / 全局 / 产品调研：目标位置已有同名内容"],
   };
 }

@@ -1903,7 +1903,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
           <section className="onboarding-step">
             <h2>选择要管理的 Agent</h2>
             <p className="onboarding-desc">
-              已自动检测本机是否安装 Trae、Codex、Claude Code。检测到的会默认勾选；未检测到的不勾选，避免之后产生「目录不存在」误报。
+              已自动检测本机是否安装 Trae CN、Codex、Claude Code、Aiden。检测到的会默认勾选；未检测到的不勾选，避免之后产生「目录不存在」误报。
             </p>
             {agentLoading ? (
               <div className="loading-state">

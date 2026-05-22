@@ -25,6 +25,8 @@ struct InferredAgentConfig {
     project_relative_path: String,
 }
 
+const DEFAULT_AGENT_MIGRATION_KEY: &str = "default_agents_trae_cn_aiden_migrated";
+
 impl Store {
     pub fn new() -> Result<Self> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
@@ -109,22 +111,7 @@ impl Store {
 
         migrate_agents_table(&conn)?;
 
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
-        if count == 0 {
-            for detected in default_agent_definitions()? {
-                let enabled_value = if detected.exists { 1 } else { 0 };
-                conn.execute(
-                    "INSERT INTO agents (id, name, global_path, project_relative_path, enabled) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        detected.id,
-                        detected.name,
-                        detected.global_path,
-                        detected.project_relative_path,
-                        enabled_value
-                    ],
-                )?;
-            }
-        }
+        sync_default_agents(&conn)?;
 
         Ok(())
     }
@@ -151,22 +138,14 @@ impl Store {
                 continue;
             }
             let root = PathBuf::from(&agent.global_path);
-            let statuses = match self.scan_target_root(
-                &skills,
-                &root,
-                TargetKind::Global,
-                agent,
-                None,
-            ) {
-                Ok(value) => value,
-                Err(error) => {
-                    extra_issues.push(format!(
-                        "{} / 全局：{:#}",
-                        agent.name, error
-                    ));
-                    Vec::new()
-                }
-            };
+            let statuses =
+                match self.scan_target_root(&skills, &root, TargetKind::Global, agent, None) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        extra_issues.push(format!("{} / 全局：{:#}", agent.name, error));
+                        Vec::new()
+                    }
+                };
             all_statuses.extend(statuses.clone());
             global_workspaces.push(AgentWorkspace {
                 agent_id: agent.id.clone(),
@@ -192,10 +171,8 @@ impl Store {
                 ) {
                     Ok(value) => value,
                     Err(error) => {
-                        extra_issues.push(format!(
-                            "{} / {}：{:#}",
-                            agent.name, project.name, error
-                        ));
+                        extra_issues
+                            .push(format!("{} / {}：{:#}", agent.name, project.name, error));
                         Vec::new()
                     }
                 };
@@ -424,7 +401,12 @@ impl Store {
                 Err(error) => {
                     // 读取失败时退化为：保留主库已经匹配出的 statuses，整体 workspace 给一条占位 issue。
                     statuses.push(TargetStatus {
-                        id: status_id("__unreadable__", &target_kind, &agent.id, project.map(|p| &p.id)),
+                        id: status_id(
+                            "__unreadable__",
+                            &target_kind,
+                            &agent.id,
+                            project.map(|p| &p.id),
+                        ),
                         skill_id: "__unreadable__".to_string(),
                         skill_name: "__unreadable__".to_string(),
                         display_name: "目录无法读取".to_string(),
@@ -449,7 +431,12 @@ impl Store {
                     Ok(value) => value,
                     Err(error) => {
                         statuses.push(TargetStatus {
-                            id: status_id("__entry_error__", &target_kind, &agent.id, project.map(|p| &p.id)),
+                            id: status_id(
+                                "__entry_error__",
+                                &target_kind,
+                                &agent.id,
+                                project.map(|p| &p.id),
+                            ),
                             skill_id: "__entry_error__".to_string(),
                             skill_name: "__entry_error__".to_string(),
                             display_name: "目录条目无法读取".to_string(),
@@ -750,15 +737,17 @@ impl Store {
 fn default_agent_definitions() -> Result<Vec<DetectedAgent>> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
     let entries = vec![
-        ("trae", "Trae", ".trae"),
+        ("trae-cn", "Trae CN", ".trae-cn"),
         ("codex", "Codex", ".codex"),
         ("claude-code", "Claude Code", ".claude"),
+        ("aiden", "Aiden", ".aiden"),
     ];
     let mut result = Vec::new();
     for (id, name, root_dir) in entries {
-        let global_path = home.join(root_dir).join("skills");
+        let agent_root = home.join(root_dir);
+        let global_path = agent_root.join("skills");
         let project_relative_path = format!("{}/skills", root_dir);
-        let exists = global_path.exists();
+        let exists = agent_root.exists() || global_path.exists();
         result.push(DetectedAgent {
             id: id.to_string(),
             name: name.to_string(),
@@ -768,6 +757,60 @@ fn default_agent_definitions() -> Result<Vec<DetectedAgent>> {
         });
     }
     Ok(result)
+}
+
+fn sync_default_agents(conn: &Connection) -> Result<()> {
+    for detected in default_agent_definitions()? {
+        let enabled_value = if detected.exists { 1 } else { 0 };
+        conn.execute(
+            "INSERT OR IGNORE INTO agents (id, name, global_path, project_relative_path, enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                detected.id,
+                detected.name,
+                detected.global_path,
+                detected.project_relative_path,
+                enabled_value
+            ],
+        )?;
+    }
+    if !default_agent_migration_completed(conn)? {
+        remove_legacy_default_trae(conn)?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, 'true')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![DEFAULT_AGENT_MIGRATION_KEY],
+        )?;
+    }
+    Ok(())
+}
+
+fn default_agent_migration_completed(conn: &Connection) -> Result<bool> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![DEFAULT_AGENT_MIGRATION_KEY],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(matches!(value.as_deref(), Some("true")))
+}
+
+fn remove_legacy_default_trae(conn: &Connection) -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
+    let legacy_global_path = home
+        .join(".trae")
+        .join("skills")
+        .to_string_lossy()
+        .to_string();
+    conn.execute(
+        "DELETE FROM agents
+         WHERE id = 'trae'
+           AND global_path = ?1
+           AND project_relative_path = '.trae/skills'",
+        params![legacy_global_path],
+    )?;
+    Ok(())
 }
 
 fn migrate_agents_table(conn: &Connection) -> Result<()> {
@@ -835,8 +878,10 @@ fn infer_agent_config(path: &Path) -> Result<InferredAgentConfig> {
 fn infer_agent_id(key: &str) -> String {
     match key {
         "codex" => "codex".to_string(),
+        "trae-cn" | "trae_cn" => "trae-cn".to_string(),
         "trae" => "trae".to_string(),
         "claude" | "claude-code" | "claude_code" => "claude-code".to_string(),
+        "aiden" => "aiden".to_string(),
         _ => slugify(key),
     }
 }
@@ -844,8 +889,10 @@ fn infer_agent_id(key: &str) -> String {
 fn infer_agent_name(key: &str) -> String {
     match key {
         "codex" => "Codex".to_string(),
+        "trae-cn" | "trae_cn" => "Trae CN".to_string(),
         "trae" => "Trae".to_string(),
         "claude" | "claude-code" | "claude_code" => "Claude Code".to_string(),
+        "aiden" => "Aiden".to_string(),
         _ => titleize_agent_name(key),
     }
 }
