@@ -1099,18 +1099,23 @@ export default function App() {
             ) : null}
             {canWithdrawTransferItem(transferItem) ? (
               <button
-                className="secondary-button"
+                className="icon-button"
                 disabled={working}
+                aria-label={`收回 ${transferItem.displayName}`}
+                title="收回"
                 onClick={() => void withdrawTransferItem(transferItem)}
               >
                 <Unlink size={16} />
-                收回
               </button>
             ) : null}
             {firstStatus ? (
-              <button className="ghost-button" onClick={() => void openPath(firstStatus.targetPath)}>
+              <button
+                className="icon-button subtle"
+                aria-label="打开位置"
+                title="打开位置"
+                onClick={() => void openPath(firstStatus.targetPath)}
+              >
                 <ExternalLink size={16} />
-                打开位置
               </button>
             ) : null}
           </div>
@@ -1167,7 +1172,9 @@ export default function App() {
               应用组合
             </button>
             <button
-              className="secondary-button"
+              className="icon-button"
+              aria-label="编辑组合"
+              title="编辑组合"
               onClick={() =>
                 setPresetDraft({
                   id: selectedPreset.id,
@@ -1178,15 +1185,15 @@ export default function App() {
               }
             >
               <Pencil size={16} />
-              编辑
             </button>
             <button
-              className="danger-button"
+              className="icon-button danger"
               disabled={working}
+              aria-label="删除组合"
+              title="删除组合"
               onClick={() => confirmDeletePreset(selectedPreset)}
             >
               <Trash2 size={16} />
-              删除
             </button>
           </div>
           <DetailSection title="组合概览">
@@ -1238,8 +1245,13 @@ export default function App() {
                   <Archive size={16} />
                   导入全部全局存量
                 </button>
-                <button className="secondary-button" onClick={() => setView("global")}>
-                  查看全局 Agent
+                <button
+                  className="icon-button"
+                  aria-label="查看全局 Agent"
+                  title="查看全局 Agent"
+                  onClick={() => setView("global")}
+                >
+                  <Globe2 size={16} />
                 </button>
               </div>
             </>
@@ -1277,17 +1289,22 @@ export default function App() {
             <Link2 size={16} />
             分发
           </button>
-          <button className="secondary-button" onClick={() => void openPath(skill.path)}>
+          <button
+            className="icon-button"
+            aria-label="打开技能目录"
+            title="打开目录"
+            onClick={() => void openPath(skill.path)}
+          >
             <ExternalLink size={16} />
-            打开目录
           </button>
           <button
-            className="danger-button"
+            className="icon-button danger"
             disabled={working}
+            aria-label="删除技能"
+            title="删除"
             onClick={() => confirmDeleteSkill(skill, locations)}
           >
             <Trash2 size={16} />
-            删除
           </button>
         </div>
         <DetailSection title="概览">
@@ -1438,9 +1455,14 @@ export default function App() {
             />
           </div>
           <div className="topbar-actions">
-            <button className="secondary-button" disabled={working} onClick={() => void load()}>
+            <button
+              className="icon-button"
+              disabled={working}
+              aria-label="刷新"
+              title="刷新"
+              onClick={() => void load()}
+            >
               <RefreshCw size={16} />
-              刷新
             </button>
             <button className="primary-button" onClick={() => setImportSkillOpen(true)}>
               <Upload size={16} />
@@ -1520,8 +1542,13 @@ export default function App() {
               <Link2 size={16} />
               批量分发
             </button>
-            <button className="ghost-button" onClick={() => setCheckedSkillIds(new Set())}>
-              清除选择
+            <button
+              className="icon-button subtle"
+              aria-label="清除选择"
+              title="清除选择"
+              onClick={() => setCheckedSkillIds(new Set())}
+            >
+              <X size={16} />
             </button>
           </div>
         ) : null}
@@ -2238,7 +2265,7 @@ function SkillTransferView({
     () => [...availableItems, ...appliedItems].flatMap((item) => [item, ...(item.children ?? [])]),
     [appliedItems, availableItems],
   );
-  const selectedItem = [...availableItems, ...appliedItems].find((item) => item.id === selectedId) ?? null;
+  const selectedItem = allTransferItems.find((item) => item.id === selectedId) ?? null;
 
   function startDrag(item: TransferItem, column: TransferColumnKey) {
     draggedRef.current = { item, column };
@@ -2259,9 +2286,9 @@ function SkillTransferView({
   }
 
   function canDropTo(column: TransferColumnKey, event: DragEvent<HTMLElement>) {
-    if (draggedRef.current) return draggedRef.current.column !== column;
-    const payload = parseTransferDragPayload(event.dataTransfer);
-    return Boolean(payload && payload.column !== column);
+    if (working) return false;
+    const dropped = resolveDragged(event.dataTransfer);
+    return Boolean(dropped && dropped.column !== column && canMoveTransferItem(dropped.item, column));
   }
 
   function dropTo(column: TransferColumnKey, event: DragEvent<HTMLElement>) {
@@ -2462,6 +2489,9 @@ function SkillTransferRow({
   onDragStart: (item: TransferItem, column: TransferColumnKey) => void;
   onDragEnd: () => void;
 }) {
+  const targetColumn = column === "available" ? "applied" : "available";
+  const canMove = canMoveTransferItem(item, targetColumn);
+
   return (
     <button
       type="button"
@@ -2470,14 +2500,21 @@ function SkillTransferRow({
         item.kind === "composition" ? "composition-row" : "",
         nested ? "nested-transfer-row" : "",
         selected ? "selected" : "",
+        canMove ? "" : "not-draggable",
       ].filter(Boolean).join(" ")}
-      draggable
+      draggable={canMove}
       onClick={() => {
         onSelect(item);
         if (item.kind === "composition" && item.presetId) onTogglePreset(item.presetId);
       }}
-      onDoubleClick={() => void onMove(item, column === "available" ? "applied" : "available")}
+      onDoubleClick={() => {
+        if (canMove) void onMove(item, targetColumn);
+      }}
       onDragStart={(event) => {
+        if (!canMove) {
+          event.preventDefault();
+          return;
+        }
         const payload: TransferDragPayload = { id: item.id, column };
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData(TRANSFER_DRAG_MIME_TYPE, JSON.stringify(payload));
@@ -2556,7 +2593,7 @@ function ImportExistingToolbar({
   return (
     <div className="list-toolbar import-toolbar">
       <span>{unmanaged.length} 个存量技能未入库</span>
-      <button className="secondary-button" onClick={() => onImport(unmanaged)}>
+      <button className="secondary-button compact" onClick={() => onImport(unmanaged)}>
         <Archive size={16} />
         导入当前范围
       </button>
@@ -2580,9 +2617,13 @@ function PresetList({
   return (
     <>
       <div className="list-toolbar">
-        <button className="secondary-button" onClick={onCreate}>
+        <button
+          className="icon-button"
+          aria-label="新建技能组合"
+          title="新建组合"
+          onClick={onCreate}
+        >
           <Plus size={16} />
-          新建组合
         </button>
       </div>
       {presets.length ? (
@@ -2709,13 +2750,21 @@ function SettingsPanel({
           <KeyValue label="配置文件" value={state.configPath} />
         </div>
         <div className="settings-actions">
-          <button className="secondary-button" onClick={() => void openPath(state.baseDir)}>
+          <button
+            className="icon-button"
+            aria-label="打开主库目录"
+            title="打开主库目录"
+            onClick={() => void openPath(state.baseDir)}
+          >
             <ExternalLink size={16} />
-            打开主库目录
           </button>
-          <button className="ghost-button" onClick={() => void onReopenOnboarding()}>
+          <button
+            className="icon-button subtle"
+            aria-label="重新打开初始化引导"
+            title="重新打开初始化引导"
+            onClick={() => void onReopenOnboarding()}
+          >
             <RefreshCw size={16} />
-            重新打开初始化引导
           </button>
         </div>
         <ProblemBox issues={state.issues} />
@@ -2727,9 +2776,13 @@ function SettingsPanel({
             <h2>Agent</h2>
             <p>选择 Agent 的全局 Skill 目录，系统自动识别名称和项目目录规则。未启用的 Agent 不会出现在工作台和扫描结果里。</p>
           </div>
-          <button className="secondary-button" onClick={onPickAgent}>
+          <button
+            className="icon-button"
+            aria-label="添加 Agent"
+            title="添加 Agent"
+            onClick={onPickAgent}
+          >
             <Plus size={16} />
-            添加 Agent
           </button>
         </div>
         {state.agents.map((agent) => (
@@ -2750,9 +2803,13 @@ function SettingsPanel({
             <h2>项目</h2>
             <p>只管理手动添加的项目路径，不自动扫描本机项目。</p>
           </div>
-          <button className="secondary-button" onClick={onPickProject}>
+          <button
+            className="icon-button"
+            aria-label="添加项目"
+            title="添加项目"
+            onClick={onPickProject}
+          >
             <FolderPlus size={16} />
-            添加项目
           </button>
         </div>
         {state.projects.length ? (
@@ -2766,8 +2823,13 @@ function SettingsPanel({
                 <code>{project.path}</code>
               </div>
               <div className="setting-row-actions">
-                <button className="ghost-button" onClick={() => onRemoveProject(project.id)}>
-                  移除
+                <button
+                  className="icon-button danger"
+                  aria-label={`移除项目 ${project.name}`}
+                  title="移除项目"
+                  onClick={() => onRemoveProject(project.id)}
+                >
+                  <Trash2 size={16} />
                 </button>
               </div>
             </div>
@@ -2818,12 +2880,22 @@ function AgentSettingRow({
           />
           <span>{agent.enabled ? "已启用" : "已停用"}</span>
         </label>
-        <button className="secondary-button" onClick={() => onPickPath(agent.id)}>
+        <button
+          className="icon-button"
+          aria-label={`重新选择 ${agent.name} 目录`}
+          title="重新选择目录"
+          onClick={() => onPickPath(agent.id)}
+        >
           <FolderPlus size={16} />
-          重新选择
         </button>
-        <button className="ghost-button" disabled={!canRemove} onClick={() => onRemove(agent.id)}>
-          移除
+        <button
+          className="icon-button danger"
+          disabled={!canRemove}
+          aria-label={`移除 Agent ${agent.name}`}
+          title="移除 Agent"
+          onClick={() => onRemove(agent.id)}
+        >
+          <Trash2 size={16} />
         </button>
       </div>
     </div>
@@ -3008,9 +3080,14 @@ function DistributionDrawer({
         </div>
         <footer>
           {isPreset ? (
-            <button className="secondary-button" disabled={!targets.length} onClick={() => void onWithdraw(targets)}>
+            <button
+              className="icon-button"
+              disabled={!targets.length}
+              aria-label="收回组合"
+              title="收回组合"
+              onClick={() => void onWithdraw(targets)}
+            >
               <Unlink size={16} />
-              收回组合
             </button>
           ) : null}
           <button className="ghost-button" onClick={onClose}>
@@ -3333,7 +3410,11 @@ function TagRow({ tags }: { tags: string[] }) {
 function InlinePathDisclosure({ path }: { path: string }) {
   return (
     <details className="inline-path-disclosure">
-      <summary>查看路径</summary>
+      <summary aria-label="查看路径" title="查看路径">
+        <ChevronRight className="summary-icon summary-closed" size={14} />
+        <ChevronDown className="summary-icon summary-open" size={14} />
+        <span className="visually-hidden">查看路径</span>
+      </summary>
       <code>{path}</code>
     </details>
   );
@@ -3343,7 +3424,11 @@ function PathDisclosure({ title, rows }: { title: string; rows: Array<{ label: s
   if (!rows.length) return null;
   return (
     <details className="path-disclosure">
-      <summary>{title}</summary>
+      <summary>
+        <ChevronRight className="summary-icon summary-closed" size={14} />
+        <ChevronDown className="summary-icon summary-open" size={14} />
+        <span>{title}</span>
+      </summary>
       <div className="path-disclosure-list">
         {rows.map((row) => (
           <div key={`${row.label}:${row.path}`}>
@@ -3366,8 +3451,14 @@ function SkillPreview({ skill }: { skill: Skill }) {
       <div className="preview-title-row">
         <h3>SKILL.md 正文预览</h3>
         {canExpand || expanded ? (
-          <button type="button" className="ghost-button compact" onClick={() => setExpanded((current) => !current)}>
-            {expanded ? "收起" : "展开"}
+          <button
+            type="button"
+            className="icon-button micro"
+            aria-label={expanded ? "收起正文预览" : "展开正文预览"}
+            title={expanded ? "收起" : "展开"}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           </button>
         ) : null}
       </div>
@@ -3484,7 +3575,7 @@ function EmptyState({
       <span>{title}</span>
       {description ? <small>{description}</small> : null}
       {action && onAction ? (
-        <button className="secondary-button" onClick={onAction}>
+        <button className="secondary-button compact" onClick={onAction}>
           {action}
         </button>
       ) : null}
@@ -3856,6 +3947,12 @@ function canApplyTransferItem(item: TransferItem) {
 function canWithdrawTransferItem(item: TransferItem) {
   return item.skillIds.length > 0
     && (item.status === "enabled" || item.status === "partial");
+}
+
+function canMoveTransferItem(item: TransferItem, targetColumn: TransferColumnKey) {
+  return targetColumn === "applied"
+    ? canApplyTransferItem(item)
+    : canWithdrawTransferItem(item);
 }
 
 function hasBlockingPathRisk(item: TransferItem) {

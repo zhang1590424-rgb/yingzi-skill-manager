@@ -107,6 +107,16 @@ code {
   font-family: "SF Mono", "Menlo", "Consolas", monospace;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 204px minmax(0, 1fr);
@@ -340,7 +350,7 @@ code {
   gap: 9px;
   flex: 1;
   min-width: 240px;
-  height: 40px;
+  height: 38px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background: var(--surface-strong);
@@ -385,6 +395,7 @@ code {
 
 .detail-actions {
   flex-wrap: wrap;
+  gap: 6px;
   margin: 12px 0 0;
 }
 
@@ -396,12 +407,13 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  min-height: 40px;
+  gap: 6px;
+  min-height: 34px;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
-  padding: 0 12px;
+  padding: 0 10px;
   color: inherit;
+  font-size: 12.5px;
   line-height: 1;
   transition:
     background-color var(--ease),
@@ -465,13 +477,55 @@ code {
 }
 
 .icon-button {
-  width: 40px;
-  min-width: 40px;
-  height: 40px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
   padding: 0;
   border-color: var(--line-strong);
   background: var(--surface-strong);
   color: var(--text-soft);
+}
+
+.icon-button.subtle,
+.icon-button.micro {
+  border-color: transparent;
+  background: transparent;
+}
+
+.icon-button.danger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--danger);
+}
+
+.icon-button.subtle:hover,
+.icon-button.micro:hover {
+  border-color: var(--line);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.icon-button.danger:hover {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.icon-button.micro {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+.primary-button.compact,
+.secondary-button.compact,
+.ghost-button.compact,
+.danger-button.compact {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 11.5px;
 }
 
 .banner {
@@ -559,12 +613,12 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 36px;
+  min-height: 30px;
   border: 1px solid var(--warn-line);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.68);
   color: var(--warn);
-  padding: 0 9px;
+  padding: 0 8px;
   font-size: 11.5px;
   transition:
     background-color var(--ease),
@@ -921,6 +975,14 @@ code {
 }
 
 .workspace.transfer-mode .list-pane {
+  border-right: 0;
+}
+
+.workspace.settings-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace.settings-mode .list-pane {
   border-right: 0;
 }
 
@@ -1356,6 +1418,10 @@ button.row {
   box-shadow: 0 3px 10px rgba(25, 31, 39, 0.07);
 }
 
+.transfer-row.not-draggable {
+  cursor: default;
+}
+
 .transfer-row.selected {
   border-color: var(--line-strong);
   background: #ffffff;
@@ -1375,6 +1441,10 @@ button.row {
 
 .transfer-row:active {
   cursor: grabbing;
+}
+
+.transfer-row.not-draggable:active {
+  cursor: default;
 }
 
 .transfer-row-main,
@@ -1489,24 +1559,25 @@ button.row {
 .status-filter-bar {
   display: flex;
   flex: 0 0 auto;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
   overflow-x: auto;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
-  padding: 7px 12px;
+  padding: 6px 12px;
 }
 
 .status-filter-bar button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 36px;
+  gap: 5px;
+  min-height: 30px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface-strong);
   color: var(--text-soft);
-  padding: 0 10px;
+  padding: 0 9px;
+  font-size: 12px;
   white-space: nowrap;
   transition:
     background-color var(--ease),
@@ -1539,12 +1610,13 @@ button.row {
 }
 
 .segmented button {
-  min-height: 40px;
+  min-height: 32px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface-strong);
   color: var(--text-soft);
-  padding: 0 11px;
+  padding: 0 10px;
+  font-size: 12px;
   white-space: nowrap;
   transition:
     background-color var(--ease),
@@ -1567,7 +1639,7 @@ button.row {
 
 .project-selector select {
   flex: 1;
-  height: 40px;
+  height: 34px;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -2019,27 +2091,66 @@ button.row {
 
 .inline-path-disclosure summary,
 .path-disclosure summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   width: fit-content;
+  border-radius: 6px;
   color: var(--text-soft);
   cursor: pointer;
   font-size: 11.5px;
   line-height: 1.45;
+  list-style: none;
+}
+
+.inline-path-disclosure summary::-webkit-details-marker,
+.path-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.inline-path-disclosure summary {
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+
+.path-disclosure summary {
+  min-height: 28px;
+  padding: 0 6px 0 2px;
 }
 
 .inline-path-disclosure summary:hover,
 .path-disclosure summary:hover {
+  background: var(--surface-hover);
   color: var(--text);
+}
+
+.summary-icon {
+  flex: 0 0 auto;
+}
+
+.summary-open {
+  display: none;
+}
+
+details[open] > summary .summary-closed {
+  display: none;
+}
+
+details[open] > summary .summary-open {
+  display: block;
 }
 
 .inline-path-disclosure code,
 .path-disclosure code {
   display: block;
   overflow-wrap: anywhere;
-  border-left: 2px solid var(--line-strong);
-  background: transparent;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
   color: #303846;
   margin-top: 6px;
-  padding: 4px 0 4px 8px;
+  padding: 6px 8px;
   font-size: 11px;
   line-height: 1.5;
 }
@@ -2172,15 +2283,22 @@ button.row {
 
 .settings-list {
   flex: 1 1 auto;
+  width: 100%;
+  max-width: 920px;
   min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 16px 18px 24px;
 }
 
 .settings-list section {
   border-bottom: 1px solid var(--line);
-  padding: 0 0 16px;
-  margin-bottom: 16px;
+  padding: 0 0 18px;
+  margin-bottom: 18px;
+}
+
+.settings-list section:last-child {
+  margin-bottom: 0;
+  border-bottom: 0;
 }
 
 .settings-list h2 {
@@ -2192,19 +2310,67 @@ button.row {
 
 .section-title-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+
+.section-title-row > div {
+  min-width: 0;
+}
+
+.section-title-row p {
+  max-width: 620px;
+  margin: 4px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-key-grid {
+  display: grid;
   gap: 10px;
+}
+
+.settings-key-grid .key-value {
+  margin: 0;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .setting-row {
   display: grid;
-  grid-template-columns: minmax(150px, 0.52fr) minmax(220px, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  min-height: 48px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 18px;
+  min-height: 0;
   border-top: 1px solid var(--line-soft);
-  padding: 10px 0;
+  padding: 14px 0;
+}
+
+.setting-row-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.setting-row-main > div {
+  min-width: 0;
+}
+
+.setting-row-main code {
+  overflow-wrap: anywhere;
+  color: #303846;
+  font-size: 11.5px;
+  line-height: 1.45;
 }
 
 .setting-row strong,
@@ -2226,11 +2392,47 @@ button.row {
   line-height: 1.35;
 }
 
-.setting-row > button:last-child {
-  justify-self: end;
+.setting-path-grid {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: start;
+  gap: 6px 10px;
 }
 
-.setting-row input,
+.setting-path-grid span {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.setting-path-grid code,
+.project-setting-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #303846;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.setting-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: max-content;
+  padding-top: 2px;
+}
+
+.agent-enable-toggle input {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--focus);
+}
+
+.setting-row input:not([type="checkbox"]),
 .dialog input,
 .dialog textarea {
   width: 100%;
@@ -2246,7 +2448,7 @@ button.row {
     box-shadow var(--ease);
 }
 
-.setting-row input:focus,
+.setting-row input:not([type="checkbox"]):focus,
 .dialog input:focus,
 .dialog textarea:focus {
   border-color: rgba(37, 99, 235, 0.56);
@@ -2659,6 +2861,16 @@ button.row {
 
   .setup-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .setting-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .setting-row-actions {
+    justify-content: flex-start;
+    min-width: 0;
+    padding-top: 0;
   }
 }
 
