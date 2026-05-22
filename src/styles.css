@@ -1170,6 +1170,18 @@ code {
   overflow: hidden;
 }
 
+.workspace.library-list-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace.library-list-only .list-pane {
+  border-right: 0;
+}
+
+.workspace.library-detail-open {
+  grid-template-columns: minmax(520px, 1fr) minmax(320px, 360px);
+}
+
 .workspace.transfer-mode {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -1422,6 +1434,7 @@ button.row {
 .preset-row .row-meta {
   align-self: start;
   padding-top: 1px;
+  transition: opacity var(--ease);
 }
 
 .skill-row .row-meta > span,
@@ -1444,6 +1457,79 @@ button.row {
   border-color: var(--warn-line);
   background: var(--warn-soft);
   color: var(--warn);
+}
+
+.skill-card-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    opacity var(--ease),
+    transform var(--ease);
+}
+
+.skill-row:hover .skill-card-actions,
+.skill-row:focus-within .skill-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.skill-row:hover .row-meta,
+.skill-row:focus-within .row-meta {
+  opacity: 0;
+}
+
+.compact-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--text-soft);
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 580;
+  box-shadow: 0 2px 8px rgba(25, 31, 39, 0.08);
+  transition:
+    background-color var(--ease),
+    border-color var(--ease),
+    color var(--ease);
+}
+
+.compact-action:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-strong);
+  color: var(--text);
+}
+
+.compact-action.primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--surface-strong);
+}
+
+.compact-action.primary:hover {
+  background: var(--primary-strong);
+  color: var(--surface-strong);
+}
+
+.compact-action.danger {
+  color: var(--danger);
+}
+
+.compact-action.danger:hover {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .preset-row .row-main {

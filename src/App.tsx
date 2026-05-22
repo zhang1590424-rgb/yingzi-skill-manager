@@ -514,7 +514,7 @@ export default function App() {
     }
     if (view === "library") {
       if (selected?.type === "skill" && filteredSkills.some((skill) => skill.id === selected.id)) return;
-      setSelected(filteredSkills[0] ? { type: "skill", id: filteredSkills[0].id } : null);
+      setSelected(null);
       return;
     }
     if (view === "global") {
@@ -775,10 +775,8 @@ export default function App() {
       setState(next);
       setView("library");
       setStatusFilter("all");
-      setSelected(importedSkill
-        ? { type: "skill", id: importedSkill.id }
-        : defaultSelectionForView("library", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
-      setNotice(`已导入技能：${changedCount} 个`);
+      setSelected(null);
+      setNotice(`已导入技能：${changedCount} 个。下一步可以在列表卡片上使用。`);
     }, undefined, "overlay");
     if (imported) onImported?.();
   }
@@ -977,6 +975,11 @@ export default function App() {
             checkedIds={checkedSkillIds}
             onToggleCheck={toggleChecked}
             onSelect={(skill) => setSelected({ type: "skill", id: skill.id })}
+            onDeploy={(skill) => setDrawer({ type: "skill", skillIds: [skill.id] })}
+            onOpen={(skill) => void openPath(skill.path)}
+            onDelete={(skill) => confirmDeleteSkill(skill, allStatuses.filter(
+              (status) => status.skillId === skill.id && status.status === "enabled",
+            ))}
             emptyTitle={state.skills.length ? "没有匹配的技能" : "技能列表里还没有技能"}
             emptyDescription={state.skills.length
               ? "换个关键词，或清除筛选后再看全部技能。"
@@ -1305,7 +1308,7 @@ export default function App() {
 
     const skill = selectedSkill && filteredSkills.some((item) => item.id === selectedSkill.id)
       ? selectedSkill
-      : filteredSkills[0] ?? null;
+      : null;
     if (!skill) {
       if (state.skills.length) {
         return (
@@ -1366,33 +1369,10 @@ export default function App() {
         </div>
         <p className="description">{skill.description || "暂无描述"}</p>
         {!skill.hasSkillMd ? <InlineWarning text="该技能缺少 SKILL.md" /> : null}
-        <div className="detail-actions">
-          <button className="primary-button" onClick={() => setDrawer({ type: "skill", skillIds: [skill.id] })}>
-            <Link2 size={16} />
-            分发
-          </button>
-          <button
-            className="icon-button"
-            aria-label="打开技能目录"
-            title="打开目录"
-            onClick={() => void openPath(skill.path)}
-          >
-            <ExternalLink size={16} />
-          </button>
-          <button
-            className="icon-button danger"
-            disabled={working}
-            aria-label="删除技能"
-            title="删除"
-            onClick={() => confirmDeleteSkill(skill, locations)}
-          >
-            <Trash2 size={16} />
-          </button>
-        </div>
-        <DetailSection title="概览">
+        <DetailSection title="使用情况">
           <div className="detail-meta-list">
             <DetailMeta label="格式状态">{skill.hasSkillMd ? "SKILL.md 正常" : "缺少 SKILL.md"}</DetailMeta>
-            <DetailMeta label="主库位置">主库内</DetailMeta>
+            <DetailMeta label="应用状态">{locations.length ? `${locations.length} 处已启用` : "未启用"}</DetailMeta>
             <DetailMeta label="标签">{skill.tags.length ? <TagRow tags={skill.tags} /> : "无标签"}</DetailMeta>
           </div>
         </DetailSection>
@@ -1404,9 +1384,12 @@ export default function App() {
   }
   const workspaceClassName = [
     "workspace",
+    view === "library" && selectedSkill ? "library-detail-open" : "",
+    view === "library" && !selectedSkill ? "library-list-only" : "",
     view === "global" || view === "projects" ? "transfer-mode" : "",
     view === "settings" ? "settings-mode" : "",
   ].filter(Boolean).join(" ");
+  const shouldShowDetailPane = view === "presets" || (view === "library" && Boolean(selectedSkill));
 
   if (onboardingCompleted === false) {
     return (
@@ -1592,9 +1575,9 @@ export default function App() {
                   renderMiddle()
                 )}
               </div>
-              {view === "global" || view === "projects" || view === "settings" ? null : (
+              {shouldShowDetailPane ? (
                 <div className="detail-pane">{renderDetail()}</div>
-              )}
+              ) : null}
             </section>
           </>
         )}
@@ -2453,6 +2436,9 @@ function SkillList({
   checkedIds,
   onToggleCheck,
   onSelect,
+  onDeploy,
+  onOpen,
+  onDelete,
   emptyTitle = "没有匹配的技能",
   emptyDescription,
   emptyAction,
@@ -2463,6 +2449,9 @@ function SkillList({
   checkedIds: Set<string>;
   onToggleCheck: (skillId: string) => void;
   onSelect: (skill: Skill) => void;
+  onDeploy: (skill: Skill) => void;
+  onOpen: (skill: Skill) => void;
+  onDelete: (skill: Skill) => void;
   emptyTitle?: string;
   emptyDescription?: string;
   emptyAction?: string;
@@ -2513,6 +2502,35 @@ function SkillList({
               <span>{skill.enabledCount} 处启用</span>
             </span>
           </button>
+          <div className="skill-card-actions" aria-label={`${skill.displayName} 操作`}>
+            <button
+              type="button"
+              className="compact-action primary"
+              onClick={() => onDeploy(skill)}
+              title="使用"
+            >
+              <Link2 size={14} />
+              <span>使用</span>
+            </button>
+            <button
+              type="button"
+              className="compact-action"
+              onClick={() => onOpen(skill)}
+              title="打开本地路径"
+            >
+              <ExternalLink size={14} />
+              <span>打开</span>
+            </button>
+            <button
+              type="button"
+              className="compact-action danger"
+              onClick={() => onDelete(skill)}
+              title="删除"
+            >
+              <Trash2 size={14} />
+              <span>删除</span>
+            </button>
+          </div>
         </div>
       ))}
     </div>
@@ -3836,7 +3854,7 @@ function EnabledLocations({ statuses }: { statuses: TargetStatus[] }) {
           </div>
         ))
       ) : (
-        <p className="empty-inline">还没有启用位置。下一步可以点击「分发」选择 Agent 或项目。</p>
+        <p className="empty-inline">还没有启用位置。下一步可以在技能卡片上点击「使用」选择 Agent 或项目。</p>
       )}
     </div>
   );
@@ -4442,7 +4460,7 @@ function defaultSelectionForView(
 ): Selection | null {
   if (!state) return null;
   if (view === "library") {
-    return state.skills[0] ? { type: "skill", id: state.skills[0].id } : null;
+    return null;
   }
   if (view === "global") {
     const items = buildGlobalTransferItems(state, agentId);
