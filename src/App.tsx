@@ -1,8 +1,12 @@
 import {
   AlertTriangle,
   Archive,
+  ArrowLeft,
+  ArrowRight,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Circle,
   ExternalLink,
   FolderKanban,
@@ -11,6 +15,7 @@ import {
   Layers3,
   Link2,
   Loader2,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -20,31 +25,38 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  addAgent,
   addProject,
   adoptSkillFromTarget,
-  applyPreset,
+  bulkAdoptSkills,
   deletePreset,
   deleteSkill,
   deploySkill,
+  detectDefaultAgents,
   getAppState,
+  getOnboardingStatus,
   importSkill,
-  installSkillFromMarket,
+  listUnmanagedForOnboarding,
   openPath,
+  removeAgent,
   removeProject,
+  setAgentEnabled,
+  setOnboardingCompleted,
   updateAgentPath,
   upsertPreset,
-  withdrawPreset,
   withdrawSkill,
 } from "./api";
 import type {
   Agent,
   AppState,
+  BulkAdoptItem,
   DeployTarget,
+  DetectedAgent,
   OperationReport,
   Preset,
   Project,
@@ -54,11 +66,9 @@ import type {
   ViewKey,
 } from "./types";
 
-const navItems: Array<{ key: ViewKey; label: string; icon: typeof BookOpen }> = [
-  { key: "library", label: "技能主库", icon: BookOpen },
-  { key: "global", label: "全局应用", icon: Globe2 },
-  { key: "projects", label: "项目应用", icon: FolderKanban },
-  { key: "presets", label: "技能套装", icon: Layers3 },
+const navItems: Array<{ key: Extract<ViewKey, "library" | "presets" | "settings">; label: string; icon: typeof BookOpen }> = [
+  { key: "library", label: "技能列表", icon: BookOpen },
+  { key: "presets", label: "技能组合", icon: Layers3 },
   { key: "settings", label: "设置", icon: Settings },
 ];
 
@@ -82,6 +92,20 @@ const statusTone: Record<SkillStatus, string> = {
   invalid: "warn",
 };
 
+type TransferStatus = SkillStatus | "partial" | "problem";
+
+const transferStatusText: Record<TransferStatus, string> = {
+  ...statusText,
+  partial: "部分应用",
+  problem: "有问题",
+};
+
+const transferStatusTone: Record<TransferStatus, string> = {
+  ...statusTone,
+  partial: "note",
+  problem: "warn",
+};
+
 type StatusFilter =
   | "all"
   | "issues"
@@ -101,6 +125,13 @@ const statusFilterLabels: Record<StatusFilter, string> = {
   enabled: "已启用",
 };
 
+const transferFilterLabels: Record<StatusFilter, string> = {
+  ...statusFilterLabels,
+  issues: "需确认",
+  disabled: "未应用",
+  enabled: "已应用",
+};
+
 const statusFilterOrder: StatusFilter[] = [
   "all",
   "issues",
@@ -113,11 +144,45 @@ const statusFilterOrder: StatusFilter[] = [
 
 const skillFilterOrder: StatusFilter[] = ["all", "issues", "enabled", "disabled"];
 
+const NOTICE_AUTO_DISMISS_MS = 3000;
+
 type Selection =
   | { type: "skill"; id: string }
   | { type: "status"; id: string }
+  | { type: "transferSkill"; id: string }
   | { type: "preset"; id: string }
   | { type: "settings" };
+
+type TransferColumnKey = "applied" | "available";
+
+const TRANSFER_DRAG_MIME_TYPE = "application/x-skill-hub-transfer-item";
+
+type TransferDragPayload = {
+  id: string;
+  column: TransferColumnKey;
+};
+
+type TransferItem = {
+  id: string;
+  kind: "skill" | "composition";
+  skillId: string;
+  skillIds: string[];
+  presetId?: string;
+  skillName: string;
+  displayName: string;
+  description: string;
+  status: TransferStatus;
+  statuses: TargetStatus[];
+  librarySkill: Skill | null;
+  targetCount: number;
+  enabledCount: number;
+  issueCount: number;
+  blockingPathCount: number;
+  targets: DeployTarget[];
+  memberCount: number;
+  missingCount: number;
+  children?: TransferItem[];
+};
 
 type DrawerState =
   | { type: "skill"; skillIds: string[] }
@@ -130,8 +195,6 @@ type PresetDraft = {
   description: string;
   skillIds: string[];
 };
-
-type ImportSkillMode = "local" | "market";
 
 type HealthIssueKind = "conflict" | "broken" | "pathMissing" | "unmanaged" | "invalid";
 
@@ -160,6 +223,7 @@ export default function App() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [onboardingCompleted, setOnboardingCompletedState] = useState<boolean | null>(null);
   const [view, setView] = useState<ViewKey>("library");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -172,6 +236,7 @@ export default function App() {
   const [importSkillOpen, setImportSkillOpen] = useState(false);
   const [presetDraft, setPresetDraft] = useState<PresetDraft | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
+  const [expandedTransferPresetIds, setExpandedTransferPresetIds] = useState<Set<string>>(new Set());
 
   async function load(showSpinner = false) {
     try {
@@ -198,14 +263,31 @@ export default function App() {
       );
     } catch (cause) {
       setError(String(cause));
+      setNotice(null);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
+    void (async () => {
+      try {
+        const status = await getOnboardingStatus();
+        setOnboardingCompletedState(status.completed);
+      } catch (cause) {
+        // 引导状态读取失败时，按未完成处理；用户仍可在设置中绕过
+        console.warn("无法读取初始化引导状态：", cause);
+        setOnboardingCompletedState(false);
+      }
+    })();
     void load(true);
   }, []);
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timeoutId = window.setTimeout(() => setNotice(null), NOTICE_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
 
   const allStatuses = useMemo(() => {
     if (!state) return [];
@@ -218,6 +300,13 @@ export default function App() {
   const healthIssues = useMemo(() => {
     if (!state) return [];
     return buildHealthIssues(state);
+  }, [state]);
+
+  const globalUnmanagedStatuses = useMemo(() => {
+    if (!state) return [];
+    return state.globalWorkspaces
+      .flatMap((workspace) => workspace.statuses)
+      .filter((status) => status.status === "unmanaged");
   }, [state]);
 
   const selectedSkill = useMemo(() => {
@@ -263,6 +352,11 @@ export default function App() {
     [queriedSkills, statusFilter],
   );
 
+  const queriedPresets = useMemo(() => {
+    if (!state) return [];
+    return state.presets.filter((preset) => presetMatchesQuery(preset, state.skills, query));
+  }, [query, state]);
+
   const globalWorkspace = state?.globalWorkspaces.find(
     (workspace) => workspace.agentId === selectedAgentId,
   );
@@ -273,6 +367,62 @@ export default function App() {
 
   const projectWorkspace = projectWorkspaces.find(
     (workspace) => workspace.agentId === selectedProjectAgentId,
+  );
+
+  const transferItems = useMemo(() => {
+    if (!state) return [];
+    if (view === "global") return buildGlobalTransferItems(state, selectedAgentId);
+    if (view === "projects" && selectedProjectId) return buildProjectTransferItems(state, selectedProjectId);
+    return [];
+  }, [selectedAgentId, selectedProjectId, state, view]);
+
+  const queriedTransferItems = useMemo(
+    () => transferItems.filter((item) =>
+      matchesQuery(query, [
+        item.displayName,
+        item.skillName,
+        item.description,
+        transferStatusText[item.status],
+        ...item.statuses.flatMap((status) => [
+          status.agentName,
+          status.projectName ?? "",
+          status.targetPath,
+          status.issue ?? "",
+          statusText[status.status],
+        ]),
+      ]),
+    ),
+    [query, transferItems],
+  );
+
+  const filteredTransferItems = useMemo(
+    () => queriedTransferItems.filter((item) => transferItemMatchesFilter(item, statusFilter)),
+    [queriedTransferItems, statusFilter],
+  );
+
+  const appliedTransferItems = useMemo(
+    () => filteredTransferItems.filter((item) => item.status !== "disabled"),
+    [filteredTransferItems],
+  );
+
+  const availableTransferItems = useMemo(
+    () => filteredTransferItems.filter((item) => item.status === "disabled"),
+    [filteredTransferItems],
+  );
+
+  const selectedTransferItem = useMemo(() => {
+    if ((view !== "global" && view !== "projects") || selected?.type !== "transferSkill") return null;
+    return transferItems.find((item) => item.id === selected.id) ?? null;
+  }, [selected, transferItems, view]);
+
+  const selectedAgent = useMemo(
+    () => state?.agents.find((agent) => agent.id === selectedAgentId) ?? null,
+    [selectedAgentId, state],
+  );
+
+  const selectedProject = useMemo(
+    () => state?.projects.find((project) => project.id === selectedProjectId) ?? null,
+    [selectedProjectId, state],
   );
 
   const queriedGlobalStatuses = useMemo(
@@ -322,15 +472,31 @@ export default function App() {
       return;
     }
     if (view === "global") {
-      if (selected?.type === "status" && filteredGlobalStatuses.some((status) => status.id === selected.id)) return;
-      setSelected(filteredGlobalStatuses[0] ? { type: "status", id: filteredGlobalStatuses[0].id } : null);
+      if (selected?.type === "transferSkill" && filteredTransferItems.some((item) => item.id === selected.id)) return;
+      const next = availableTransferItems[0] ?? appliedTransferItems[0] ?? null;
+      setSelected(next ? { type: "transferSkill", id: next.id } : null);
       return;
     }
     if (view === "projects") {
-      if (selected?.type === "status" && filteredProjectStatuses.some((status) => status.id === selected.id)) return;
-      setSelected(filteredProjectStatuses[0] ? { type: "status", id: filteredProjectStatuses[0].id } : null);
+      if (selected?.type === "transferSkill" && filteredTransferItems.some((item) => item.id === selected.id)) return;
+      const next = availableTransferItems[0] ?? appliedTransferItems[0] ?? null;
+      setSelected(next ? { type: "transferSkill", id: next.id } : null);
+      return;
     }
-  }, [filteredGlobalStatuses, filteredProjectStatuses, filteredSkills, selected, state, view]);
+    if (view === "presets") {
+      if (selected?.type === "preset" && queriedPresets.some((preset) => preset.id === selected.id)) return;
+      setSelected(queriedPresets[0] ? { type: "preset", id: queriedPresets[0].id } : null);
+    }
+  }, [
+    appliedTransferItems,
+    availableTransferItems,
+    filteredSkills,
+    filteredTransferItems,
+    queriedPresets,
+    selected,
+    state,
+    view,
+  ]);
 
   function selectView(nextView: ViewKey) {
     setView(nextView);
@@ -345,6 +511,8 @@ export default function App() {
   }
 
   function selectGlobalAgent(agentId: string) {
+    setView("global");
+    setStatusFilter("all");
     setSelectedAgentId(agentId);
     setSelected(defaultSelectionForView(
       "global",
@@ -356,6 +524,8 @@ export default function App() {
   }
 
   function selectProject(projectId: string) {
+    setView("projects");
+    setStatusFilter("all");
     setSelectedProjectId(projectId);
     setSelected(defaultSelectionForView(
       "projects",
@@ -389,12 +559,11 @@ export default function App() {
     if (issue.status.targetKind === "project") {
       setView("projects");
       setSelectedProjectId(issue.status.projectId ?? null);
-      setSelectedProjectAgentId(issue.status.agentId);
     } else {
       setView("global");
       setSelectedAgentId(issue.status.agentId);
     }
-    setSelected({ type: "status", id: issue.status.id });
+    setSelected({ type: "transferSkill", id: transferItemIdForSkill(issue.status.skillId) });
   }
 
   function changeStatusFilter(nextFilter: StatusFilter) {
@@ -405,13 +574,13 @@ export default function App() {
       return;
     }
     if (view === "global") {
-      const status = queriedGlobalStatuses.find((item) => targetStatusMatchesFilter(item, nextFilter));
-      setSelected(status ? { type: "status", id: status.id } : null);
+      const item = queriedTransferItems.find((nextItem) => transferItemMatchesFilter(nextItem, nextFilter));
+      setSelected(item ? { type: "transferSkill", id: item.id } : null);
       return;
     }
     if (view === "projects") {
-      const status = queriedProjectStatuses.find((item) => targetStatusMatchesFilter(item, nextFilter));
-      setSelected(status ? { type: "status", id: status.id } : null);
+      const item = queriedTransferItems.find((nextItem) => transferItemMatchesFilter(nextItem, nextFilter));
+      setSelected(item ? { type: "transferSkill", id: item.id } : null);
     }
   }
 
@@ -438,8 +607,8 @@ export default function App() {
 
   function confirmDeletePreset(preset: Preset) {
     setConfirmDialog({
-      title: `删除套装：${preset.name}`,
-      message: "将删除这个套装配置，不会删除主库里的技能。",
+      title: `删除组合：${presetDisplayName(preset)}`,
+      message: "将删除这个技能组合配置，不会删除技能列表里的技能。",
       details: preset.skillIds.length ? [`包含 ${preset.skillIds.length} 个技能`] : undefined,
       confirmLabel: "确认删除",
       tone: "danger",
@@ -448,7 +617,7 @@ export default function App() {
           const next = await deletePreset(preset.id);
           setState(next);
           setSelected(defaultSelectionForView("presets", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
-        }, "已删除套装");
+        }, "已删除组合");
       },
     });
   }
@@ -466,15 +635,15 @@ export default function App() {
           ],
           true,
         );
-        await refreshAfterReport(report, "已按主库分发");
+        await refreshAfterReport(report, "已按技能列表分发");
       });
     };
 
     if (status.status === "conflict" || status.status === "unmanaged") {
       setConfirmDialog({
         title: `用主库覆盖：${status.displayName}`,
-        message: "目标位置已有同名内容，确认后会按主库版本重建软链接。",
-        details: [status.targetPath, `主库：${skill.path}`],
+        message: "目标位置已有同名内容，确认后会按技能列表版本重建软链接。",
+        details: [status.targetPath, `技能列表：${skill.path}`],
         confirmLabel: "确认覆盖",
         tone: "warn",
         onConfirm: apply,
@@ -494,6 +663,7 @@ export default function App() {
       return true;
     } catch (cause) {
       setError(formatActionError(cause));
+      setNotice(null);
       return false;
     } finally {
       setWorking(false);
@@ -505,6 +675,7 @@ export default function App() {
     const summary = formatOperationReport(report, successLabel);
     if (report.errors.length) {
       setError(`${summary}。下一步：检查目标路径、目录权限或设置里的 Agent 路径后重试。${formatReportExamples(report.errors)}`);
+      setNotice(null);
       return;
     }
     if (report.conflicts.length) {
@@ -548,12 +719,32 @@ export default function App() {
     }, "已添加项目");
   }
 
+  async function pickAndAddAgent() {
+    const picked = await open({ directory: true, multiple: false, title: "选择 Agent 全局 Skill 目录" });
+    if (!picked || Array.isArray(picked)) return;
+    await runAction(async () => {
+      const next = await addAgent(picked);
+      setState(next);
+      const agent = next.agents.find((item) => item.globalPath === picked);
+      if (agent) setSelectedAgentId(agent.id);
+    }, "已添加 Agent");
+  }
+
+  async function pickAndUpdateAgent(agentId: string) {
+    const picked = await open({ directory: true, multiple: false, title: "选择 Agent 全局 Skill 目录" });
+    if (!picked || Array.isArray(picked)) return;
+    await runAction(async () => {
+      const next = await updateAgentPath(agentId, picked);
+      setState(next);
+    }, "已更新 Agent 目录");
+  }
+
   function adoptStatuses(statuses: TargetStatus[]) {
     if (!statuses.length) return;
     setConfirmDialog({
       title: `导入 ${statuses.length} 个存量技能`,
       message: "将把目标位置的存量技能导入主库，并把原位置改成指向主库的软链接。",
-      details: ["冲突策略：主库优先处理同名技能"],
+      details: ["冲突策略：技能列表优先处理同名技能"],
       confirmLabel: "确认导入",
       tone: "warn",
       onConfirm: async () => {
@@ -586,6 +777,99 @@ export default function App() {
     });
   }
 
+  function currentTransferTargets() {
+    if (!state) return [];
+    if (view === "global") {
+      return [{ agentId: selectedAgentId, projectId: null }];
+    }
+    if (view === "projects" && selectedProjectId) {
+      return state.agents.map((agent) => ({ agentId: agent.id, projectId: selectedProjectId }));
+    }
+    return [];
+  }
+
+  async function applyTransferItem(item: TransferItem) {
+    if (!item.skillIds.length) {
+      setError(item.kind === "composition"
+        ? "这个技能组合没有可应用的成员。下一步：先编辑组合，至少选择一个仍在技能列表里的技能。"
+        : "该 Skill 尚未进入主库，不能直接应用。下一步：先执行入库，再重新应用。");
+      return;
+    }
+    if (hasBlockingPathRisk(item)) {
+      setError("当前项目路径不存在，已阻断应用。下一步：先在设置中确认项目路径后重试。");
+      return;
+    }
+    const targets = currentTransferTargets();
+    if (!targets.length) return;
+    const hasOverwriteRisk = itemHasOverwriteRisk(item);
+    const hasMissingMembers = item.kind === "composition" && item.missingCount > 0;
+    const apply = async () => {
+      await runAction(async () => {
+        let combined = OperationReportEmpty();
+        if (hasMissingMembers) {
+          combined.skipped += item.missingCount * targets.length;
+        }
+        for (const skillId of item.skillIds) {
+          const report = await deploySkill(skillId, targets, hasOverwriteRisk);
+          combined = mergeReport(combined, report);
+        }
+        await refreshAfterReport(combined, view === "projects" ? "已应用到项目" : "已应用到 Agent");
+      });
+    };
+    if (hasOverwriteRisk || hasMissingMembers) {
+      const riskyStatuses = item.statuses.filter((status) => isOverwriteRiskStatus(status.status));
+      const details = [
+        ...riskyStatuses.slice(0, 4).map((status) => `${status.agentName}：${status.targetPath}`),
+        ...(hasMissingMembers ? [`有 ${item.missingCount} 个组合成员已不在技能列表中，本次会跳过。`] : []),
+      ];
+      setConfirmDialog({
+        title: `${hasOverwriteRisk ? "用技能列表覆盖" : "应用可用成员"}：${item.displayName}`,
+        message: view === "projects"
+          ? `会影响当前项目下 ${targets.length} 个 Agent，其中 ${riskyStatuses.length} 个位置存在覆盖风险。`
+          : hasOverwriteRisk
+            ? "目标位置已有同名内容，确认后会按技能列表版本重建软链接。"
+            : "这个技能组合有成员缺失，确认后只应用当前仍存在的成员。",
+        details,
+        confirmLabel: hasOverwriteRisk ? "覆盖并应用" : "应用可用成员",
+        tone: "warn",
+        onConfirm: apply,
+      });
+      return;
+    }
+    await apply();
+  }
+
+  async function withdrawTransferItem(item: TransferItem) {
+    if (!item.skillIds.length) {
+      setError(item.kind === "composition"
+        ? "这个技能组合没有可收回的有效成员。下一步：编辑组合或手动检查目标目录。"
+        : "该 Skill 尚未进入主库，无法判断是否为本应用创建的软链接。下一步：先入库或手动处理目标目录。");
+      return;
+    }
+    if (!canWithdrawTransferItem(item)) {
+      setError("当前状态不能直接收回。下一步：先处理冲突、未入库或路径异常。");
+      return;
+    }
+    const targets = currentTransferTargets();
+    if (!targets.length) return;
+    await runAction(async () => {
+      let combined = OperationReportEmpty();
+      for (const skillId of item.skillIds) {
+        const report = await withdrawSkill(skillId, targets);
+        combined = mergeReport(combined, report);
+      }
+      await refreshAfterReport(combined, view === "projects" ? "已从项目收回" : "已从 Agent 收回");
+    });
+  }
+
+  async function moveTransferItem(item: TransferItem, targetColumn: TransferColumnKey) {
+    if (targetColumn === "applied") {
+      await applyTransferItem(item);
+      return;
+    }
+    await withdrawTransferItem(item);
+  }
+
   function toggleChecked(skillId: string) {
     setCheckedSkillIds((current) => {
       const next = new Set(current);
@@ -615,6 +899,12 @@ export default function App() {
             checkedIds={checkedSkillIds}
             onToggleCheck={toggleChecked}
             onSelect={(skill) => setSelected({ type: "skill", id: skill.id })}
+            emptyTitle={state.skills.length ? "没有匹配的技能" : "技能列表里还没有技能"}
+            emptyDescription={state.skills.length
+              ? "换个关键词，或清除筛选后再看全部技能。"
+              : "先导入一个包含 SKILL.md 的文件夹。导入只进入主库，不会自动应用到 Agent。"}
+            emptyAction={state.skills.length ? undefined : "导入技能"}
+            emptyOnAction={state.skills.length ? undefined : () => setImportSkillOpen(true)}
           />
         </>
       );
@@ -623,24 +913,24 @@ export default function App() {
     if (view === "global") {
       return (
         <>
-          <AgentTabs
-            agents={state.agents}
-            selectedId={selectedAgentId}
-            onSelect={selectGlobalAgent}
-          />
           <StatusFilterBar
             value={statusFilter}
-            options={buildStatusFilterOptions(queriedGlobalStatuses)}
+            options={buildTransferFilterOptions(queriedTransferItems)}
             onChange={changeStatusFilter}
           />
           <ImportExistingToolbar
-            statuses={globalWorkspace?.statuses ?? []}
+            statuses={transferItems.flatMap((item) => item.statuses)}
             onImport={adoptStatuses}
           />
-          <StatusList
-            statuses={filteredGlobalStatuses}
-            selectedId={selected?.type === "status" ? selected.id : null}
-            onSelect={(status) => setSelected({ type: "status", id: status.id })}
+          <SkillTransferView
+            appliedItems={appliedTransferItems}
+            availableItems={availableTransferItems}
+            selectedId={selected?.type === "transferSkill" ? selected.id : null}
+            expandedPresetIds={expandedTransferPresetIds}
+            onSelect={(item) => setSelected({ type: "transferSkill", id: item.id })}
+            onTogglePreset={(presetId) => toggleSetValue(setExpandedTransferPresetIds, presetId)}
+            onMove={moveTransferItem}
+            working={working}
           />
         </>
       );
@@ -649,32 +939,26 @@ export default function App() {
     if (view === "projects") {
       return (
         <>
-          <ProjectSelector
-            projects={state.projects}
-            selectedId={selectedProjectId}
-            onSelect={selectProject}
-            onAdd={pickAndAddProject}
-          />
           {selectedProjectId ? (
             <>
-              <AgentTabs
-                agents={state.agents}
-                selectedId={selectedProjectAgentId}
-                onSelect={selectProjectAgent}
-              />
               <StatusFilterBar
                 value={statusFilter}
-                options={buildStatusFilterOptions(queriedProjectStatuses)}
+                options={buildTransferFilterOptions(queriedTransferItems)}
                 onChange={changeStatusFilter}
               />
               <ImportExistingToolbar
-                statuses={projectWorkspace?.statuses ?? []}
+                statuses={transferItems.flatMap((item) => item.statuses)}
                 onImport={adoptStatuses}
               />
-              <StatusList
-                statuses={filteredProjectStatuses}
-                selectedId={selected?.type === "status" ? selected.id : null}
-                onSelect={(status) => setSelected({ type: "status", id: status.id })}
+              <SkillTransferView
+                appliedItems={appliedTransferItems}
+                availableItems={availableTransferItems}
+                selectedId={selected?.type === "transferSkill" ? selected.id : null}
+                expandedPresetIds={expandedTransferPresetIds}
+                onSelect={(item) => setSelected({ type: "transferSkill", id: item.id })}
+                onTogglePreset={(presetId) => toggleSetValue(setExpandedTransferPresetIds, presetId)}
+                onMove={moveTransferItem}
+                working={working}
               />
             </>
           ) : (
@@ -689,12 +973,9 @@ export default function App() {
     }
 
     if (view === "presets") {
-      const presets = state.presets.filter((preset) =>
-        matchesQuery(query, [preset.name, preset.description, ...preset.skillIds]),
-      );
       return (
         <PresetList
-          presets={presets}
+          presets={queriedPresets}
           skills={state.skills}
           selectedId={selected?.type === "preset" ? selected.id : null}
           onSelect={(preset) => setSelected({ type: "preset", id: preset.id })}
@@ -706,10 +987,49 @@ export default function App() {
     return (
       <SettingsPanel
         state={state}
+        onPickAgent={pickAndAddAgent}
         onPickProject={pickAndAddProject}
-        onUpdateAgentPath={(agentId, path) =>
-          runAction(async () => setState(await updateAgentPath(agentId, path)), "已更新路径")
-        }
+        onUpdateAgentPath={pickAndUpdateAgent}
+        onReopenOnboarding={async () => {
+          try {
+            const next = await setOnboardingCompleted(false);
+            setState(next);
+            setOnboardingCompletedState(false);
+          } catch (cause) {
+            setError(formatActionError(cause));
+          }
+        }}
+        onToggleAgentEnabled={async (agentId, enabled) => {
+          await runAction(async () => {
+            const next = await setAgentEnabled(agentId, enabled);
+            setState(next);
+          }, enabled ? "已启用 Agent" : "已停用 Agent");
+        }}
+        onRemoveAgent={(agentId) => {
+          const agent = state.agents.find((item) => item.id === agentId);
+          setConfirmDialog({
+            title: `移除 Agent：${agent?.name ?? agentId}`,
+            message: "只会从技能中枢的管理列表移除，不会删除真实目录，也不会删除已经存在的 Skill。",
+            details: agent ? [agent.globalPath, `项目目录规则：<项目根目录>/${agent.projectRelativePath}`] : undefined,
+            confirmLabel: "确认移除",
+            tone: "warn",
+            onConfirm: async () => {
+              await runAction(async () => {
+                const next = await removeAgent(agentId);
+                const nextAgentId = next.agents.some((item) => item.id === selectedAgentId)
+                  ? selectedAgentId
+                  : next.agents[0]?.id ?? selectedAgentId;
+                const nextProjectAgentId = next.agents.some((item) => item.id === selectedProjectAgentId)
+                  ? selectedProjectAgentId
+                  : next.agents[0]?.id ?? selectedProjectAgentId;
+                setState(next);
+                setSelectedAgentId(nextAgentId);
+                setSelectedProjectAgentId(nextProjectAgentId);
+                setSelected(defaultSelectionForView(view, next, nextAgentId, selectedProjectId, nextProjectAgentId));
+              }, "已移除 Agent");
+            },
+          });
+        }}
         onRemoveProject={(projectId) => {
           const project = state.projects.find((item) => item.id === projectId);
           setConfirmDialog({
@@ -736,100 +1056,63 @@ export default function App() {
   function renderDetail() {
     if (!state) return null;
 
-    if (view === "settings") {
-      return (
-        <ContextPanel title="本地配置">
-          <KeyValue label="主库路径" value={state.skillsRoot} />
-          <KeyValue label="数据库" value={state.databasePath} />
-          <KeyValue label="配置文件" value={state.configPath} />
-          <div className="detail-actions">
-            <button className="secondary-button" onClick={() => void openPath(state.baseDir)}>
-              <ExternalLink size={16} />
-              打开主库目录
-            </button>
-          </div>
-          <ProblemBox issues={state.issues} />
-        </ContextPanel>
-      );
-    }
+    const transferItem = selectedTransferItem && filteredTransferItems.some((item) => item.id === selectedTransferItem.id)
+      ? selectedTransferItem
+      : availableTransferItems[0] ?? appliedTransferItems[0] ?? null;
 
-    const scopedSelectedStatus = selectedStatus && (
-      view === "global"
-        ? filteredGlobalStatuses.some((status) => status.id === selectedStatus.id)
-        : view === "projects"
-          ? filteredProjectStatuses.some((status) => status.id === selectedStatus.id)
-          : false
-    ) ? selectedStatus : null;
-
-    if (scopedSelectedStatus) {
-      const selectedStatus = scopedSelectedStatus;
-      const librarySkill = state.skills.find((skill) => skill.id === selectedStatus.skillId);
+    if ((view === "global" || view === "projects") && transferItem) {
+      const librarySkill = transferItem.librarySkill;
+      const unmanagedStatuses = transferItem.statuses.filter((status) => status.status === "unmanaged");
+      const firstStatus = transferItem.statuses[0] ?? null;
       return (
-        <ContextPanel title={selectedStatus.displayName}>
-          <StatusPill status={selectedStatus.status} />
-          <p className="description">{selectedStatus.description || "暂无描述"}</p>
-          <KeyValue label="智能体应用" value={selectedStatus.agentName} />
-          <KeyValue label="应用范围" value={selectedStatus.projectName ?? "全局"} />
-          <KeyValue label="目标路径" value={selectedStatus.targetPath} />
-          {selectedStatus.linkTarget ? <KeyValue label="链接目标" value={selectedStatus.linkTarget} /> : null}
-          {selectedStatus.issue ? <InlineWarning text={selectedStatus.issue} /> : null}
+        <ContextPanel title={transferItem.displayName}>
+          <StatusPill status={transferItem.status} />
+          <p className="description">{transferItem.description || "暂无描述"}</p>
+          <KeyValue label="当前对象" value={view === "projects" ? selectedProject?.name ?? "项目" : selectedAgent?.name ?? "Agent"} />
+          <KeyValue
+            label="应用范围"
+            value={view === "projects"
+              ? `${transferItem.enabledCount}/${transferItem.targetCount} 个 Agent 已应用`
+              : selectedAgent?.globalPath ?? "全局"}
+          />
+          <TransferStatusDetails item={transferItem} />
           <div className="detail-actions">
-            {selectedStatus.status === "unmanaged" ? (
+            {unmanagedStatuses.length ? (
               <button
                 className="primary-button"
                 disabled={working}
-                onClick={() =>
-                  runAction(async () => {
-                    const next = await adoptSkillFromTarget(
-                      selectedStatus.agentId,
-                      selectedStatus.projectId ?? null,
-                      selectedStatus.skillName,
-                    );
-                    setState(next);
-                    setNotice("已入库并重建软链接：变更 1 个。下一步可以确认启用位置或继续分发。");
-                  })
-                }
+                onClick={() => adoptStatuses(unmanagedStatuses)}
               >
                 <Archive size={16} />
                 入库
               </button>
             ) : null}
-            {librarySkill && selectedStatus.status !== "enabled" ? (
+            {canApplyTransferItem(transferItem) ? (
               <button
                 className="primary-button"
                 disabled={working}
-                onClick={() => void deployLibraryToStatus(librarySkill, selectedStatus)}
+                onClick={() => void applyTransferItem(transferItem)}
               >
                 <Link2 size={16} />
-                {selectedStatus.status === "conflict" || selectedStatus.status === "unmanaged"
-                  ? "用主库覆盖"
-                  : "分发到此位置"}
+                {transferItem.status === "conflict" ? "用主库覆盖" : transferItem.status === "partial" ? "补齐应用" : "应用"}
               </button>
             ) : null}
-            {librarySkill && selectedStatus.status === "enabled" ? (
+            {canWithdrawTransferItem(transferItem) ? (
               <button
                 className="secondary-button"
                 disabled={working}
-                onClick={() =>
-                  runAction(async () => {
-                    const report = await withdrawSkill(librarySkill.id, [
-                      {
-                        agentId: selectedStatus.agentId,
-                        projectId: selectedStatus.projectId ?? null,
-                      },
-                    ]);
-                    await refreshAfterReport(report, "已收回");
-                  })
-                }
+                onClick={() => void withdrawTransferItem(transferItem)}
               >
                 <Unlink size={16} />
                 收回
               </button>
             ) : null}
-            <button className="ghost-button" onClick={() => void openPath(selectedStatus.targetPath)}>
-              <ExternalLink size={16} />
-              打开位置
-            </button>
+            {firstStatus ? (
+              <button className="ghost-button" onClick={() => void openPath(firstStatus.targetPath)}>
+                <ExternalLink size={16} />
+                打开位置
+              </button>
+            ) : null}
           </div>
           {librarySkill ? <SkillPreview skill={librarySkill} /> : null}
         </ContextPanel>
@@ -838,40 +1121,63 @@ export default function App() {
 
     if (view === "global" || view === "projects") {
       return (
-        <ContextPanel title={view === "global" ? "全局应用" : "项目应用"}>
+        <ContextPanel title={view === "global" ? selectedAgent?.name ?? "全局 Agent" : selectedProject?.name ?? "项目应用"}>
           <EmptyState
             title={view === "projects" && !selectedProjectId
               ? "还没有纳入管理的项目"
-              : "当前筛选没有匹配的应用状态"}
+              : "当前筛选没有匹配的 Skill"}
             action={view === "projects" && !selectedProjectId ? "添加项目" : undefined}
             onAction={view === "projects" && !selectedProjectId ? pickAndAddProject : undefined}
           />
+          {view === "projects" && selectedProject && !selectedProject.exists ? (
+            <InlineWarning text="项目路径当前不可访问，请在设置中确认项目目录。" />
+          ) : null}
         </ContextPanel>
       );
     }
 
     if (selectedPreset) {
+      const presetMembers = buildPresetMemberRows(selectedPreset, state.skills);
+      const availableMemberCount = presetMembers.filter((member) => member.skill).length;
+      const missingMemberCount = presetMembers.length - availableMemberCount;
+      const abnormalMemberCount = presetMembers.filter((member) =>
+        member.skill && (!member.skill.hasSkillMd || member.skill.issueCount > 0)
+      ).length;
+      const presetProblemCount = missingMemberCount + abnormalMemberCount;
+      const canApplyPreset = availableMemberCount > 0;
       return (
-        <ContextPanel title={selectedPreset.name}>
-          <p className="description">{selectedPreset.description || "暂无描述"}</p>
-          <KeyValue label="包含技能" value={`${selectedPreset.skillIds.length} 个`} />
-          <PresetSkillNames preset={selectedPreset} skills={state.skills} />
+        <ContextPanel title={presetDisplayName(selectedPreset)}>
+          <div className="detail-status-row">
+            <DetailBadge tone={selectedPreset.skillIds.length ? "note" : "muted"}>
+              {selectedPreset.skillIds.length ? `${selectedPreset.skillIds.length} 个成员` : "空组合"}
+            </DetailBadge>
+            <DetailBadge tone={presetProblemCount ? "warn" : "good"}>
+              {presetProblemCount ? `${presetProblemCount} 个问题` : "成员正常"}
+            </DetailBadge>
+          </div>
+          <p className="description">{selectedPreset.description || skillNames(selectedPreset, state.skills) || "暂无描述"}</p>
+          {!canApplyPreset ? <InlineWarning text="这个组合没有可用成员。下一步：编辑组合，至少选择一个仍在技能列表里的技能。" /> : null}
           <div className="detail-actions">
-            <button className="primary-button" onClick={() => setDrawer({ type: "preset", presetId: selectedPreset.id })}>
+            <button
+              className="primary-button"
+              disabled={!canApplyPreset}
+              onClick={() => setDrawer({ type: "preset", presetId: selectedPreset.id })}
+            >
               <Link2 size={16} />
-              应用套装
+              应用组合
             </button>
             <button
               className="secondary-button"
               onClick={() =>
                 setPresetDraft({
                   id: selectedPreset.id,
-                  name: selectedPreset.name,
+                  name: presetDisplayName(selectedPreset),
                   description: selectedPreset.description,
                   skillIds: selectedPreset.skillIds,
                 })
               }
             >
+              <Pencil size={16} />
               编辑
             </button>
             <button
@@ -883,14 +1189,27 @@ export default function App() {
               删除
             </button>
           </div>
+          <DetailSection title="组合概览">
+            <div className="detail-meta-list">
+              <DetailMeta label="成员总数">{`${selectedPreset.skillIds.length} 个`}</DetailMeta>
+              <DetailMeta label="可用成员">{`${availableMemberCount} 个`}</DetailMeta>
+              <DetailMeta label="缺失成员">{`${missingMemberCount} 个`}</DetailMeta>
+            </div>
+          </DetailSection>
+          <DetailSection title="成员清单">
+            <PresetMemberList members={presetMembers} />
+          </DetailSection>
+          <DetailSection title="组合规则">
+            <p className="muted-text">组合本身不会被软链接；应用或收回组合时，只批量处理成员 Skill。</p>
+          </DetailSection>
         </ContextPanel>
       );
     }
 
     if (view === "presets") {
       return (
-        <ContextPanel title="技能套装">
-          <EmptyState title="还没有技能套装" action="新建套装" onAction={() => setPresetDraft({ id: null, name: "", description: "", skillIds: [] })} />
+        <ContextPanel title="技能组合">
+          <EmptyState title="还没有技能组合" action="新建组合" onAction={() => setPresetDraft({ id: null, name: "", description: "", skillIds: [] })} />
         </ContextPanel>
       );
     }
@@ -901,7 +1220,7 @@ export default function App() {
     if (!skill) {
       if (state.skills.length) {
         return (
-          <ContextPanel title="技能主库">
+          <ContextPanel title="技能列表">
             <EmptyState title="当前筛选没有匹配的技能" />
           </ContextPanel>
         );
@@ -910,7 +1229,7 @@ export default function App() {
         .flatMap((workspace) => workspace.statuses)
         .filter((status) => status.status === "unmanaged");
       return (
-        <ContextPanel title="技能主库">
+        <ContextPanel title="技能列表">
           {unmanaged.length ? (
             <>
               <InlineWarning text={`发现 ${unmanaged.length} 个全局存量技能尚未入库。`} />
@@ -920,12 +1239,17 @@ export default function App() {
                   导入全部全局存量
                 </button>
                 <button className="secondary-button" onClick={() => setView("global")}>
-                  查看全局应用
+                  查看全局 Agent
                 </button>
               </div>
             </>
           ) : (
-            <EmptyState title="主库里还没有技能" action="导入技能" onAction={() => setImportSkillOpen(true)} />
+            <EmptyState
+              title="技能列表里还没有技能"
+              description="选择一个包含 SKILL.md 的本地文件夹，先进入主库，再决定应用范围。"
+              action="导入技能"
+              onAction={() => setImportSkillOpen(true)}
+            />
           )}
         </ContextPanel>
       );
@@ -934,14 +1258,20 @@ export default function App() {
     const locations = allStatuses.filter(
       (status) => status.skillId === skill.id && status.status === "enabled",
     );
+    const skillProblemCount = skill.issueCount || (!skill.hasSkillMd ? 1 : 0);
 
     return (
       <ContextPanel title={skill.displayName}>
-        <p className="description">{skill.description}</p>
+        <div className="detail-status-row">
+          <DetailBadge tone={locations.length ? "good" : "muted"}>
+            {locations.length ? `已启用 ${locations.length} 处` : "未启用"}
+          </DetailBadge>
+          <DetailBadge tone={skillProblemCount ? "warn" : "good"}>
+            {skillProblemCount ? `${skillProblemCount} 个问题` : "无问题"}
+          </DetailBadge>
+        </div>
+        <p className="description">{skill.description || "暂无描述"}</p>
         {!skill.hasSkillMd ? <InlineWarning text="该技能缺少 SKILL.md" /> : null}
-        <KeyValue label="主库路径" value={skill.path} />
-        <KeyValue label="启用位置" value={`${locations.length} 个`} />
-        <TagRow tags={skill.tags} />
         <div className="detail-actions">
           <button className="primary-button" onClick={() => setDrawer({ type: "skill", skillIds: [skill.id] })}>
             <Link2 size={16} />
@@ -960,9 +1290,44 @@ export default function App() {
             删除
           </button>
         </div>
+        <DetailSection title="概览">
+          <div className="detail-meta-list">
+            <DetailMeta label="格式状态">{skill.hasSkillMd ? "SKILL.md 正常" : "缺少 SKILL.md"}</DetailMeta>
+            <DetailMeta label="主库位置">主库内</DetailMeta>
+            <DetailMeta label="标签">{skill.tags.length ? <TagRow tags={skill.tags} /> : "无标签"}</DetailMeta>
+          </div>
+        </DetailSection>
         <EnabledLocations statuses={locations} />
         <SkillPreview skill={skill} />
+        <PathDisclosure title="更多技术信息" rows={[{ label: "主库路径", path: skill.path }]} />
       </ContextPanel>
+    );
+  }
+  const workspaceClassName = [
+    "workspace",
+    view === "global" || view === "projects" ? "transfer-mode" : "",
+    view === "settings" ? "settings-mode" : "",
+  ].filter(Boolean).join(" ");
+
+  if (onboardingCompleted === false) {
+    return (
+      <OnboardingScreen
+        onFinished={async (summary) => {
+          try {
+            const next = await setOnboardingCompleted(true);
+            setState(next);
+            setOnboardingCompletedState(true);
+            setView("library");
+            const noticeParts: string[] = [];
+            noticeParts.push(`${summary.enabledAgents} 个 Agent`);
+            if (summary.adoptedSkills > 0) noticeParts.push(`${summary.adoptedSkills} 个 Skill 入库`);
+            if (summary.addedProjects > 0) noticeParts.push(`${summary.addedProjects} 个项目`);
+            setNotice(`已完成初始化：${noticeParts.join("，")}`);
+          } catch (cause) {
+            setError(formatActionError(cause));
+          }
+        }}
+      />
     );
   }
 
@@ -982,23 +1347,80 @@ export default function App() {
           </div>
         </div>
         <nav className="nav-list" aria-label="主导航">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
+          <button
+            className={view === "library" ? "nav-item active" : "nav-item"}
+            onClick={() => selectView("library")}
+          >
+            <BookOpen size={17} />
+            技能列表
+          </button>
+          <button
+            className={view === "presets" ? "nav-item active" : "nav-item"}
+            onClick={() => selectView("presets")}
+          >
+            <Layers3 size={17} />
+            技能组合
+          </button>
+
+          <div className="nav-section">
+            <div className="nav-section-header">全局 Agent</div>
+            {state?.agents.map((agent) => (
               <button
-                key={item.key}
-                className={view === item.key ? "nav-item active" : "nav-item"}
-                onClick={() => selectView(item.key)}
+                key={agent.id}
+                className={view === "global" && selectedAgentId === agent.id ? "nav-item sub active" : "nav-item sub"}
+                onClick={() => selectGlobalAgent(agent.id)}
+                title={agent.globalPath}
               >
-                <Icon size={17} />
-                {item.label}
+                <Globe2 size={16} />
+                <span>{agent.name}</span>
               </button>
-            );
-          })}
+            ))}
+          </div>
+
+          <div className="nav-section">
+            <div className="nav-section-header">项目应用</div>
+            {state?.projects.length ? (
+              state.projects.map((project) => (
+                <button
+                  key={project.id}
+                  className={[
+                    "nav-item",
+                    "sub",
+                    view === "projects" && selectedProjectId === project.id ? "active" : "",
+                    project.exists ? "" : "warning",
+                  ].filter(Boolean).join(" ")}
+                  onClick={() => selectProject(project.id)}
+                  title={project.path}
+                >
+                  <FolderKanban size={16} />
+                  <span>{project.name}</span>
+                </button>
+              ))
+            ) : (
+              <div className="nav-empty-hint">暂无项目</div>
+            )}
+          </div>
+
+          <div className="nav-section bottom">
+            {navItems.filter((item) => item.key === "settings").map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.key}
+                  className={view === item.key ? "nav-item active" : "nav-item"}
+                  onClick={() => selectView(item.key)}
+                >
+                  <Icon size={17} />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
         </nav>
         {state ? (
           <div className="sidebar-meta">
-            <span>主库 {state.skills.length} 个技能</span>
+            <span>技能 {state.skills.length} 个</span>
+            <span>组合 {state.presets.length} 个</span>
             <span>{state.projects.length} 个项目</span>
           </div>
         ) : null}
@@ -1028,7 +1450,7 @@ export default function App() {
         </header>
 
         {error ? (
-          <div className="banner error">
+          <div className="banner error" role="alert">
             <AlertTriangle size={16} />
             {error}
             <button onClick={() => setError(null)} aria-label="关闭错误">
@@ -1037,7 +1459,7 @@ export default function App() {
           </div>
         ) : null}
         {notice ? (
-          <div className="banner success">
+          <div className="banner success" role="status" aria-live="polite">
             <CheckCircle2 size={16} />
             {notice}
             <button onClick={() => setNotice(null)} aria-label="关闭提示">
@@ -1046,40 +1468,50 @@ export default function App() {
           </div>
         ) : null}
 
-        {state ? (
-          <HealthOverview
-            issues={healthIssues}
-            onSelect={selectHealthIssue}
-          />
-        ) : null}
+        {!state && !loading ? (
+          <StartupFallback error={error} onRetry={() => void load(true)} />
+        ) : (
+          <>
+            {state ? (
+              <HealthOverview
+                issues={healthIssues}
+                onSelect={selectHealthIssue}
+              />
+            ) : null}
 
-        <section className="workspace">
-          <div className="list-pane">
-            <PaneHeader
-              view={view}
-              count={
-                view === "library"
-                  ? filteredSkills.length
-                  : view === "global"
-                    ? filteredGlobalStatuses.length
-                    : view === "projects"
-                      ? filteredProjectStatuses.length
-                      : view === "presets"
-                        ? state?.presets.length ?? 0
-                        : state?.agents.length ?? 0
-              }
-            />
-            {loading ? (
-              <div className="loading-state">
-                <Loader2 className="spin" size={20} />
-                正在读取本地技能状态
+            <section className={workspaceClassName}>
+              <div className="list-pane">
+                <PaneHeader
+                  view={view}
+                  title={view === "global" ? selectedAgent?.name ?? "全局 Agent" : view === "projects" ? selectedProject?.name ?? "项目应用" : undefined}
+                  subtitle={view === "settings" ? "对象和本地路径" : view === "projects" && selectedProject ? "项目整体应用到所有 Agent" : view === "global" && selectedAgent ? selectedAgent.globalPath : undefined}
+                  count={
+                    view === "library"
+                      ? filteredSkills.length
+                      : view === "global"
+                        ? filteredTransferItems.length
+                        : view === "projects"
+                          ? filteredTransferItems.length
+                          : view === "presets"
+                            ? queriedPresets.length
+                            : (state?.agents.length ?? 0) + (state?.projects.length ?? 0)
+                  }
+                />
+                {loading ? (
+                  <div className="loading-state">
+                    <Loader2 className="spin" size={20} />
+                    正在读取本地技能状态
+                  </div>
+                ) : (
+                  renderMiddle()
+                )}
               </div>
-            ) : (
-              renderMiddle()
-            )}
-          </div>
-          <div className="detail-pane">{renderDetail()}</div>
-        </section>
+              {view === "global" || view === "projects" || view === "settings" ? null : (
+                <div className="detail-pane">{renderDetail()}</div>
+              )}
+            </section>
+          </>
+        )}
 
         {checkedSkillIds.size > 0 ? (
           <div className="bulk-bar">
@@ -1115,8 +1547,16 @@ export default function App() {
                 }
                 await refreshAfterReport(combined, "已分发");
               } else {
-                const report = await applyPreset(drawer.presetId, targets, overwrite);
-                await refreshAfterReport(report, "已应用套装");
+                const skillIds = existingPresetSkillIds(state, drawer.presetId);
+                let combined = OperationReportEmpty();
+                const preset = state.presets.find((item) => item.id === drawer.presetId);
+                const missingCount = Math.max((preset?.skillIds.length ?? 0) - skillIds.length, 0);
+                if (missingCount) combined.skipped += missingCount * targets.length;
+                for (const skillId of skillIds) {
+                  const report = await deploySkill(skillId, targets, overwrite);
+                  combined = mergeReport(combined, report);
+                }
+                await refreshAfterReport(combined, "已应用组合");
               }
               setDrawer(null);
               setCheckedSkillIds(new Set());
@@ -1125,8 +1565,12 @@ export default function App() {
           onWithdraw={async (targets) => {
             await runAction(async () => {
               if (drawer.type === "preset") {
-                const report = await withdrawPreset(drawer.presetId, targets);
-                await refreshAfterReport(report, "已收回套装");
+                let combined = OperationReportEmpty();
+                for (const skillId of existingPresetSkillIds(state, drawer.presetId)) {
+                  const report = await withdrawSkill(skillId, targets);
+                  combined = mergeReport(combined, report);
+                }
+                await refreshAfterReport(combined, "已收回组合");
               }
             });
           }}
@@ -1138,21 +1582,6 @@ export default function App() {
           working={working}
           onClose={() => setImportSkillOpen(false)}
           onPickLocal={() => void pickAndImportSkill(() => setImportSkillOpen(false))}
-          onInstallFromMarket={(marketUrl, version) =>
-            runAction(async () => {
-              const next = await installSkillFromMarket(marketUrl, version);
-              setState(next);
-              setView("library");
-              setStatusFilter("all");
-              const marketSkillId = marketSkillIdFromUrlClient(marketUrl);
-              const skill = next.skills.find(
-                (item) => item.name === slugifyClient(marketSkillId) || item.id === slugifyClient(marketSkillId),
-              );
-              setSelected(skill ? { type: "skill", id: skill.id } : defaultSelectionForView("library", next, selectedAgentId, selectedProjectId, selectedProjectAgentId));
-              setImportSkillOpen(false);
-              setNotice("已从 Skill 市场安装：变更 1 个。下一步可以在右侧分发。");
-            })
-          }
         />
       ) : null}
 
@@ -1172,7 +1601,7 @@ export default function App() {
               setState(next);
               setSelected({ type: "preset", id: draft.id ?? slugifyClient(draft.name) });
               setPresetDraft(null);
-            }, "已保存技能套装")
+            }, "已保存技能组合")
           }
         />
       ) : null}
@@ -1192,19 +1621,29 @@ export default function App() {
   );
 }
 
-function PaneHeader({ view, count }: { view: ViewKey; count: number }) {
+function PaneHeader({
+  view,
+  count,
+  title: customTitle,
+  subtitle,
+}: {
+  view: ViewKey;
+  count: number;
+  title?: string;
+  subtitle?: string;
+}) {
   const title: Record<ViewKey, string> = {
-    library: "技能主库",
-    global: "全局应用",
+    library: "技能列表",
+    global: "全局 Agent",
     projects: "项目应用",
-    presets: "技能套装",
+    presets: "技能组合",
     settings: "设置",
   };
   return (
     <div className="pane-header">
       <div>
-        <h1>{title[view]}</h1>
-        <span>{count} 项</span>
+        <h1>{customTitle ?? title[view]}</h1>
+        <span>{subtitle ? `${subtitle} · ` : ""}{count} 项</span>
       </div>
     </div>
   );
@@ -1219,15 +1658,7 @@ function HealthOverview({
 }) {
   const total = issues.reduce((sum, issue) => sum + issue.count, 0);
   if (!issues.length) {
-    return (
-      <section className="health-overview clean" aria-label="健康总览">
-        <div>
-          <strong>健康总览</strong>
-          <span>当前没有发现冲突、失效链接或路径异常</span>
-        </div>
-        <CheckCircle2 size={16} />
-      </section>
-    );
+    return null;
   }
 
   return (
@@ -1249,6 +1680,384 @@ function HealthOverview({
             <strong>{issue.count}</strong>
           </button>
         ))}
+      </div>
+    </section>
+  );
+}
+
+type OnboardingSummary = {
+  enabledAgents: number;
+  adoptedSkills: number;
+  addedProjects: number;
+};
+
+type OnboardingStep = 1 | 2 | 3;
+
+function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSummary) => void | Promise<void> }) {
+  const [step, setStep] = useState<OnboardingStep>(1);
+  const [detectedAgents, setDetectedAgents] = useState<DetectedAgent[]>([]);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
+  const [agentLoading, setAgentLoading] = useState(true);
+  const [unmanaged, setUnmanaged] = useState<TargetStatus[]>([]);
+  const [selectedAdoptIds, setSelectedAdoptIds] = useState<Set<string>>(new Set());
+  const [unmanagedLoading, setUnmanagedLoading] = useState(false);
+  const [unmanagedScanFailed, setUnmanagedScanFailed] = useState(false);
+  const [adopting, setAdopting] = useState(false);
+  const [adoptedCount, setAdoptedCount] = useState(0);
+  const [stepError, setStepError] = useState<string | null>(null);
+  const [stepNotice, setStepNotice] = useState<string | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setAgentLoading(true);
+        setStepError(null);
+        const list = await detectDefaultAgents();
+        setDetectedAgents(list);
+        setSelectedAgentIds(new Set(list.filter((agent) => agent.exists).map((agent) => agent.id)));
+      } catch (cause) {
+        setStepError(`无法检测默认 Agent：${cleanErrorMessage(cause)}`);
+      } finally {
+        setAgentLoading(false);
+      }
+    })();
+  }, []);
+
+  function toggleAgent(id: string) {
+    setSelectedAgentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function commitAgentSelection() {
+    setBusy(true);
+    setStepError(null);
+    try {
+      for (const agent of detectedAgents) {
+        await setAgentEnabled(agent.id, selectedAgentIds.has(agent.id));
+      }
+    } catch (cause) {
+      setStepError(`保存 Agent 选择失败：${cleanErrorMessage(cause)}`);
+      setBusy(false);
+      return false;
+    }
+    setBusy(false);
+    return true;
+  }
+
+  async function goToStep2() {
+    if (!(await commitAgentSelection())) return;
+    setStep(2);
+    setUnmanagedLoading(true);
+    setStepError(null);
+    setUnmanagedScanFailed(false);
+    try {
+      const list = await listUnmanagedForOnboarding();
+      setUnmanaged(list);
+      setSelectedAdoptIds(new Set(list.map((status) => status.id)));
+      if (!list.length) {
+        // 无存量直接跳过到步骤 3
+        setStep(3);
+      }
+    } catch (cause) {
+      // 扫描失败不阻断引导，告诉用户可以跳过
+      setUnmanagedScanFailed(true);
+      setUnmanaged([]);
+      setSelectedAdoptIds(new Set());
+      setStepError(`暂时无法扫描存量 Skill，可以先跳过这一步：${cleanErrorMessage(cause)}`);
+    } finally {
+      setUnmanagedLoading(false);
+    }
+  }
+
+  function toggleAdopt(id: string) {
+    setSelectedAdoptIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function adoptSelected() {
+    const targets = unmanaged.filter((status) => selectedAdoptIds.has(status.id));
+    if (!targets.length) {
+      setStep(3);
+      return;
+    }
+    setAdopting(true);
+    setStepError(null);
+    setStepNotice(null);
+    try {
+      const items: BulkAdoptItem[] = targets.map((status) => ({
+        agentId: status.agentId,
+        projectId: status.projectId ?? null,
+        skillName: status.skillName,
+      }));
+      const report = await bulkAdoptSkills(items);
+      setAdoptedCount((prev) => prev + report.changed);
+      if (report.errors.length) {
+        setStepError(`部分 Skill 入库失败：${report.errors.slice(0, 3).join("；")}${report.errors.length > 3 ? "…" : ""}`);
+      } else {
+        setStepNotice(`已入库 ${report.changed} 个 Skill`);
+      }
+      setStep(3);
+    } catch (cause) {
+      setStepError(`批量入库失败：${cleanErrorMessage(cause)}`);
+    } finally {
+      setAdopting(false);
+    }
+  }
+
+  function skipStep2() {
+    setStep(3);
+  }
+
+  async function pickProjectInOnboarding() {
+    setBusy(true);
+    setStepError(null);
+    try {
+      const picked = await open({ directory: true, multiple: false, title: "选择项目目录" });
+      if (!picked || Array.isArray(picked)) {
+        setBusy(false);
+        return;
+      }
+      const next = await addProject(picked);
+      setProjects(next.projects);
+      setStepNotice(`已添加项目：${picked}`);
+    } catch (cause) {
+      setStepError(`添加项目失败：${cleanErrorMessage(cause)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function finishOnboarding() {
+    await onFinished({
+      enabledAgents: selectedAgentIds.size,
+      adoptedSkills: adoptedCount,
+      addedProjects: projects.length,
+    });
+  }
+
+  return (
+    <div className="onboarding-shell" role="main">
+      <div className="onboarding-card">
+        <header className="onboarding-header">
+          <strong>初始化引导</strong>
+          <span>步骤 {step} / 3</span>
+        </header>
+
+        {stepError ? (
+          <div className="banner error" role="alert">
+            <AlertTriangle size={16} />
+            <span>{stepError}</span>
+            <button onClick={() => setStepError(null)} aria-label="关闭提示">
+              <X size={14} />
+            </button>
+          </div>
+        ) : null}
+        {stepNotice ? (
+          <div className="banner success" role="status">
+            <CheckCircle2 size={16} />
+            <span>{stepNotice}</span>
+            <button onClick={() => setStepNotice(null)} aria-label="关闭提示">
+              <X size={14} />
+            </button>
+          </div>
+        ) : null}
+
+        {step === 1 ? (
+          <section className="onboarding-step">
+            <h2>选择要管理的 Agent</h2>
+            <p className="onboarding-desc">
+              已自动检测本机是否安装 Trae、Codex、Claude Code。检测到的会默认勾选；未检测到的不勾选，避免之后产生「目录不存在」误报。
+            </p>
+            {agentLoading ? (
+              <div className="loading-state">
+                <Loader2 className="spin" size={18} />
+                正在探测本机 Agent
+              </div>
+            ) : (
+              <div className="onboarding-list">
+                {detectedAgents.map((agent) => {
+                  const checked = selectedAgentIds.has(agent.id);
+                  return (
+                    <label key={agent.id} className={`onboarding-row ${checked ? "selected" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleAgent(agent.id)}
+                      />
+                      <div className="onboarding-row-main">
+                        <strong>{agent.name}</strong>
+                        <small>{agent.exists ? "已检测到目录" : "未检测到目录，应用 Skill 时会自动创建"}</small>
+                        <code>{agent.globalPath}</code>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <footer className="onboarding-footer">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busy || agentLoading}
+                onClick={() => void goToStep2()}
+              >
+                下一步
+                <ArrowRight size={16} />
+              </button>
+            </footer>
+          </section>
+        ) : null}
+
+        {step === 2 ? (
+          <section className="onboarding-step">
+            <h2>处理已有的存量 Skill</h2>
+            <p className="onboarding-desc">
+              在已选 Agent 的目录中发现以下 Skill 还没进入主库。建议默认全部入库，原位置会改成指向主库的软链接。
+            </p>
+            {unmanagedLoading ? (
+              <div className="loading-state">
+                <Loader2 className="spin" size={18} />
+                正在扫描存量 Skill
+              </div>
+            ) : unmanaged.length === 0 ? (
+              <div className="onboarding-empty">
+                {unmanagedScanFailed ? "暂时无法扫描存量 Skill，可以先跳过这一步。" : "没有发现需要入库的存量 Skill。"}
+              </div>
+            ) : (
+              <div className="onboarding-list">
+                {unmanaged.map((status) => {
+                  const checked = selectedAdoptIds.has(status.id);
+                  return (
+                    <label key={status.id} className={`onboarding-row ${checked ? "selected" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleAdopt(status.id)}
+                      />
+                      <div className="onboarding-row-main">
+                        <strong>{status.displayName || status.skillName}</strong>
+                        <small>{status.agentName} · {status.skillName}</small>
+                        <code>{status.targetPath}</code>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <footer className="onboarding-footer">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setStep(1)}
+                disabled={adopting}
+              >
+                <ArrowLeft size={16} />
+                上一步
+              </button>
+              <div className="onboarding-footer-right">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={skipStep2}
+                  disabled={adopting}
+                >
+                  跳过
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void adoptSelected()}
+                  disabled={adopting || unmanagedLoading}
+                >
+                  {adopting ? <Loader2 className="spin" size={16} /> : <Archive size={16} />}
+                  全部入库（{selectedAdoptIds.size}）
+                </button>
+              </div>
+            </footer>
+          </section>
+        ) : null}
+
+        {step === 3 ? (
+          <section className="onboarding-step">
+            <h2>添加项目（可选）</h2>
+            <p className="onboarding-desc">
+              想立即把当前正在做的项目纳入管理吗？可以稍后在设置中再添加，跳过不会影响使用。
+            </p>
+            {projects.length ? (
+              <div className="onboarding-list">
+                {projects.map((project) => (
+                  <div key={project.id} className="onboarding-row">
+                    <FolderKanban size={16} />
+                    <div className="onboarding-row-main">
+                      <strong>{project.name}</strong>
+                      <code>{project.path}</code>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="onboarding-empty">还没添加项目。</div>
+            )}
+            <div className="onboarding-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void pickProjectInOnboarding()}
+                disabled={busy}
+              >
+                <FolderPlus size={16} />
+                选择项目目录
+              </button>
+            </div>
+            <footer className="onboarding-footer">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setStep(unmanaged.length ? 2 : 1)}
+                disabled={busy}
+              >
+                <ArrowLeft size={16} />
+                上一步
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void finishOnboarding()}
+                disabled={busy}
+              >
+                完成
+                <CheckCircle2 size={16} />
+              </button>
+            </footer>
+          </section>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function StartupFallback({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  return (
+    <section className="startup-fallback" role="alert">
+      <AlertTriangle size={22} />
+      <div>
+        <h1>本地状态没有读取成功</h1>
+        <p>{error ? cleanErrorMessage(error) : "应用暂时没有拿到技能、Agent 和项目状态。"}</p>
+        <p>优先检查 <code>~/.skills-manager</code> 目录权限，或直接刷新重试。</p>
+        <button type="button" className="primary-button" onClick={onRetry}>
+          <RefreshCw size={16} />
+          刷新重试
+        </button>
       </div>
     </section>
   );
@@ -1287,15 +2096,30 @@ function SkillList({
   checkedIds,
   onToggleCheck,
   onSelect,
+  emptyTitle = "没有匹配的技能",
+  emptyDescription,
+  emptyAction,
+  emptyOnAction,
 }: {
   skills: Skill[];
   selectedId: string | null;
   checkedIds: Set<string>;
   onToggleCheck: (skillId: string) => void;
   onSelect: (skill: Skill) => void;
+  emptyTitle?: string;
+  emptyDescription?: string;
+  emptyAction?: string;
+  emptyOnAction?: () => void;
 }) {
   if (!skills.length) {
-    return <EmptyState title="没有匹配的技能" />;
+    return (
+      <EmptyState
+        title={emptyTitle}
+        description={emptyDescription}
+        action={emptyAction}
+        onAction={emptyOnAction}
+      />
+    );
   }
   return (
     <div className="rows">
@@ -1371,6 +2195,355 @@ function StatusList({
   );
 }
 
+function parseTransferDragPayload(dataTransfer: DataTransfer): TransferDragPayload | null {
+  const rawPayload = dataTransfer.getData(TRANSFER_DRAG_MIME_TYPE);
+  if (!rawPayload) return null;
+  try {
+    const payload = JSON.parse(rawPayload) as Partial<TransferDragPayload>;
+    if (typeof payload.id === "string" && isTransferColumnKey(payload.column)) {
+      return { id: payload.id, column: payload.column };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function isTransferColumnKey(value: unknown): value is TransferColumnKey {
+  return value === "available" || value === "applied";
+}
+
+function SkillTransferView({
+  appliedItems,
+  availableItems,
+  selectedId,
+  expandedPresetIds,
+  onSelect,
+  onTogglePreset,
+  onMove,
+  working,
+}: {
+  appliedItems: TransferItem[];
+  availableItems: TransferItem[];
+  selectedId: string | null;
+  expandedPresetIds: Set<string>;
+  onSelect: (item: TransferItem) => void;
+  onTogglePreset: (presetId: string) => void;
+  onMove: (item: TransferItem, targetColumn: TransferColumnKey) => Promise<void>;
+  working: boolean;
+}) {
+  const draggedRef = useRef<{ item: TransferItem; column: TransferColumnKey } | null>(null);
+  const [draggedColumn, setDraggedColumn] = useState<TransferColumnKey | null>(null);
+  const allTransferItems = useMemo(
+    () => [...availableItems, ...appliedItems].flatMap((item) => [item, ...(item.children ?? [])]),
+    [appliedItems, availableItems],
+  );
+  const selectedItem = [...availableItems, ...appliedItems].find((item) => item.id === selectedId) ?? null;
+
+  function startDrag(item: TransferItem, column: TransferColumnKey) {
+    draggedRef.current = { item, column };
+    setDraggedColumn(column);
+  }
+
+  function clearDrag() {
+    draggedRef.current = null;
+    setDraggedColumn(null);
+  }
+
+  function resolveDragged(dataTransfer: DataTransfer) {
+    if (draggedRef.current) return draggedRef.current;
+    const payload = parseTransferDragPayload(dataTransfer);
+    if (!payload) return null;
+    const item = allTransferItems.find((nextItem) => nextItem.id === payload.id) ?? null;
+    return item ? { item, column: payload.column } : null;
+  }
+
+  function canDropTo(column: TransferColumnKey, event: DragEvent<HTMLElement>) {
+    if (draggedRef.current) return draggedRef.current.column !== column;
+    const payload = parseTransferDragPayload(event.dataTransfer);
+    return Boolean(payload && payload.column !== column);
+  }
+
+  function dropTo(column: TransferColumnKey, event: DragEvent<HTMLElement>) {
+    const dropped = resolveDragged(event.dataTransfer);
+    if (!dropped || dropped.column === column) {
+      clearDrag();
+      return;
+    }
+    const item = dropped.item;
+    clearDrag();
+    void onMove(item, column);
+  }
+
+  return (
+    <div className="transfer-workbench">
+      <SkillTransferColumn
+        title="未应用 Skill"
+        description="技能列表中还没有应用到当前对象的 Skill"
+        column="available"
+        items={availableItems}
+        selectedId={selectedId}
+        expandedPresetIds={expandedPresetIds}
+        draggedColumn={draggedColumn}
+        onSelect={onSelect}
+        onTogglePreset={onTogglePreset}
+        onMove={onMove}
+        onCanDrop={canDropTo}
+        onDragStart={startDrag}
+        onDragEnd={clearDrag}
+        onDrop={dropTo}
+      />
+      <div className="transfer-action-bar" aria-label="应用和收回 Skill">
+        <button
+          type="button"
+          className="icon-button transfer-apply-button"
+          disabled={working || !selectedItem || !canApplyTransferItem(selectedItem)}
+          onClick={() => selectedItem && void onMove(selectedItem, "applied")}
+          aria-label="应用选中的 Skill"
+          title="应用选中的 Skill"
+        >
+          <ArrowRight size={17} />
+        </button>
+        <button
+          type="button"
+          className="icon-button"
+          disabled={working || !selectedItem || !canWithdrawTransferItem(selectedItem)}
+          onClick={() => selectedItem && void onMove(selectedItem, "available")}
+          aria-label="收回选中的 Skill"
+          title="收回选中的 Skill"
+        >
+          <ArrowLeft size={17} />
+        </button>
+      </div>
+      <SkillTransferColumn
+        title="已应用 Skill"
+        description="当前对象已关联或正在生效的 Skill"
+        column="applied"
+        items={appliedItems}
+        selectedId={selectedId}
+        expandedPresetIds={expandedPresetIds}
+        draggedColumn={draggedColumn}
+        onSelect={onSelect}
+        onTogglePreset={onTogglePreset}
+        onMove={onMove}
+        onCanDrop={canDropTo}
+        onDragStart={startDrag}
+        onDragEnd={clearDrag}
+        onDrop={dropTo}
+      />
+    </div>
+  );
+}
+
+function SkillTransferColumn({
+  title,
+  description,
+  column,
+  items,
+  selectedId,
+  expandedPresetIds,
+  draggedColumn,
+  onSelect,
+  onTogglePreset,
+  onMove,
+  onCanDrop,
+  onDragStart,
+  onDragEnd,
+  onDrop,
+}: {
+  title: string;
+  description: string;
+  column: TransferColumnKey;
+  items: TransferItem[];
+  selectedId: string | null;
+  expandedPresetIds: Set<string>;
+  draggedColumn: TransferColumnKey | null;
+  onSelect: (item: TransferItem) => void;
+  onTogglePreset: (presetId: string) => void;
+  onMove: (item: TransferItem, targetColumn: TransferColumnKey) => Promise<void>;
+  onCanDrop: (column: TransferColumnKey, event: DragEvent<HTMLElement>) => boolean;
+  onDragStart: (item: TransferItem, column: TransferColumnKey) => void;
+  onDragEnd: () => void;
+  onDrop: (column: TransferColumnKey, event: DragEvent<HTMLElement>) => void;
+}) {
+  const isDropTarget = Boolean(draggedColumn && draggedColumn !== column);
+  return (
+    <section
+      className={[
+        "transfer-column",
+        `transfer-column-${column}`,
+        isDropTarget ? "drop-target" : "",
+      ].filter(Boolean).join(" ")}
+      onDragOver={(event) => {
+        if (!onCanDrop(column, event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => {
+        if (!onCanDrop(column, event)) return;
+        event.preventDefault();
+        onDrop(column, event);
+      }}
+    >
+      <header>
+        <div>
+          <h2>{title}</h2>
+          <span>{description}</span>
+        </div>
+        <strong>{items.length}</strong>
+      </header>
+      {items.length ? (
+        <div className="transfer-rows">
+          {items.map((item) => {
+            const expanded = Boolean(item.presetId && expandedPresetIds.has(item.presetId));
+            return (
+              <div key={item.id} className="transfer-row-block">
+                <SkillTransferRow
+                  item={item}
+                  selected={selectedId === item.id}
+                  column={column}
+                  expanded={expanded}
+                  onSelect={onSelect}
+                  onTogglePreset={onTogglePreset}
+                  onMove={onMove}
+                  onDragStart={onDragStart}
+                  onDragEnd={onDragEnd}
+                />
+                {item.kind === "composition" && expanded && item.children?.length ? (
+                  <div className="transfer-child-rows">
+                    {item.children.map((child) => (
+                      <SkillTransferRow
+                        key={child.id}
+                        item={child}
+                        selected={selectedId === child.id}
+                        column={column}
+                        nested
+                        expanded={false}
+                        onSelect={onSelect}
+                        onTogglePreset={onTogglePreset}
+                        onMove={onMove}
+                        onDragStart={onDragStart}
+                        onDragEnd={onDragEnd}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState title={column === "applied" ? "当前没有已应用 Skill" : "当前没有未应用 Skill"} />
+      )}
+    </section>
+  );
+}
+
+function SkillTransferRow({
+  item,
+  selected,
+  column,
+  nested = false,
+  expanded,
+  onSelect,
+  onTogglePreset,
+  onMove,
+  onDragStart,
+  onDragEnd,
+}: {
+  item: TransferItem;
+  selected: boolean;
+  column: TransferColumnKey;
+  nested?: boolean;
+  expanded: boolean;
+  onSelect: (item: TransferItem) => void;
+  onTogglePreset: (presetId: string) => void;
+  onMove: (item: TransferItem, targetColumn: TransferColumnKey) => Promise<void>;
+  onDragStart: (item: TransferItem, column: TransferColumnKey) => void;
+  onDragEnd: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={[
+        "transfer-row",
+        item.kind === "composition" ? "composition-row" : "",
+        nested ? "nested-transfer-row" : "",
+        selected ? "selected" : "",
+      ].filter(Boolean).join(" ")}
+      draggable
+      onClick={() => {
+        onSelect(item);
+        if (item.kind === "composition" && item.presetId) onTogglePreset(item.presetId);
+      }}
+      onDoubleClick={() => void onMove(item, column === "available" ? "applied" : "available")}
+      onDragStart={(event) => {
+        const payload: TransferDragPayload = { id: item.id, column };
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData(TRANSFER_DRAG_MIME_TYPE, JSON.stringify(payload));
+        event.dataTransfer.setData("text/plain", item.id);
+        onDragStart(item, column);
+      }}
+      onDragEnd={onDragEnd}
+    >
+      <span className="transfer-row-main">
+        <span className="transfer-row-title">
+          {item.kind === "composition" ? (
+            <span className="transfer-row-disclosure" aria-hidden="true">
+              {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            </span>
+          ) : null}
+          <strong>{item.displayName}</strong>
+        </span>
+        <small>{item.description || item.skillName}</small>
+      </span>
+      <span className="transfer-row-side">
+        <TransferItemStatusPill item={item} column={column} />
+        {item.kind === "composition" ? (
+          <small>{item.enabledCount}/{item.memberCount} 技能</small>
+        ) : item.targetCount > 1 ? (
+          <small>{item.enabledCount}/{item.targetCount} Agent</small>
+        ) : null}
+      </span>
+      <TransferRowHint item={item} />
+    </button>
+  );
+}
+
+function TransferItemStatusPill({ item, column }: { item: TransferItem; column: TransferColumnKey }) {
+  if (item.status !== "disabled" && item.status !== "enabled") {
+    return <StatusPill status={item.status} />;
+  }
+  const isApplied = column === "applied";
+  return (
+    <span className={`status-pill ${isApplied ? "good" : "muted"}`}>
+      <span />
+      {isApplied ? "已应用" : "未应用"}
+    </span>
+  );
+}
+
+function TransferRowHint({ item }: { item: TransferItem }) {
+  if (item.kind === "composition" && item.missingCount > 0) {
+    return <small className="transfer-row-hint">有 {item.missingCount} 个成员缺失，应用时会跳过</small>;
+  }
+  if (
+    item.status === "disabled" &&
+    item.blockingPathCount === 0 &&
+    item.statuses.some((status) => status.status === "pathMissing" || !status.rootExists)
+  ) {
+    return <small className="transfer-row-hint">目标目录尚未创建，应用时会自动创建</small>;
+  }
+  const issue = item.statuses.find((status) => status.issue)?.issue;
+  if (issue) {
+    return <small className="transfer-row-hint">{issue}</small>;
+  }
+  if (item.status === "partial") {
+    return <small className="transfer-row-hint">部分 Agent 已应用，可继续补齐</small>;
+  }
+  return null;
+}
+
 function ImportExistingToolbar({
   statuses,
   onImport,
@@ -1409,7 +2582,7 @@ function PresetList({
       <div className="list-toolbar">
         <button className="secondary-button" onClick={onCreate}>
           <Plus size={16} />
-          新建套装
+          新建组合
         </button>
       </div>
       {presets.length ? (
@@ -1417,19 +2590,24 @@ function PresetList({
           {presets.map((preset) => (
             <button
               key={preset.id}
-              className={selectedId === preset.id ? "row selected" : "row"}
+              className={["row", "preset-row", selectedId === preset.id ? "selected" : ""].filter(Boolean).join(" ")}
               onClick={() => onSelect(preset)}
             >
+              <span className="preset-row-icon" aria-hidden="true">
+                <Layers3 size={16} />
+              </span>
               <span className="row-main">
-                <strong>{preset.name}</strong>
+                <strong>{presetDisplayName(preset)}</strong>
                 <small>{preset.description || skillNames(preset, skills)}</small>
               </span>
-              <span className="row-meta">{preset.skillIds.length} 个技能</span>
+              <span className="row-meta">
+                <span>{preset.skillIds.length} 个技能</span>
+              </span>
             </button>
           ))}
         </div>
       ) : (
-        <EmptyState title="还没有技能套装" action="新建套装" onAction={onCreate} />
+        <EmptyState title="还没有技能组合" action="新建组合" onAction={onCreate} />
       )}
     </>
   );
@@ -1504,26 +2682,74 @@ function ProjectSelector({
 
 function SettingsPanel({
   state,
+  onPickAgent,
   onPickProject,
   onUpdateAgentPath,
+  onReopenOnboarding,
+  onToggleAgentEnabled,
+  onRemoveAgent,
   onRemoveProject,
 }: {
   state: AppState;
+  onPickAgent: () => void;
   onPickProject: () => void;
-  onUpdateAgentPath: (agentId: string, path: string) => void;
+  onUpdateAgentPath: (agentId: string) => void;
+  onReopenOnboarding: () => void | Promise<void>;
+  onToggleAgentEnabled: (agentId: string, enabled: boolean) => void | Promise<void>;
+  onRemoveAgent: (agentId: string) => void;
   onRemoveProject: (projectId: string) => void;
 }) {
   return (
     <div className="settings-list">
       <section>
-        <h2>智能体应用路径</h2>
-        {state.agents.map((agent) => (
-          <AgentPathRow key={agent.id} agent={agent} onSave={onUpdateAgentPath} />
-        ))}
+        <h2>本地配置</h2>
+        <div className="settings-key-grid">
+          <KeyValue label="主库路径" value={state.skillsRoot} />
+          <KeyValue label="数据库" value={state.databasePath} />
+          <KeyValue label="配置文件" value={state.configPath} />
+        </div>
+        <div className="settings-actions">
+          <button className="secondary-button" onClick={() => void openPath(state.baseDir)}>
+            <ExternalLink size={16} />
+            打开主库目录
+          </button>
+          <button className="ghost-button" onClick={() => void onReopenOnboarding()}>
+            <RefreshCw size={16} />
+            重新打开初始化引导
+          </button>
+        </div>
+        <ProblemBox issues={state.issues} />
       </section>
+
       <section>
         <div className="section-title-row">
-          <h2>项目列表</h2>
+          <div>
+            <h2>Agent</h2>
+            <p>选择 Agent 的全局 Skill 目录，系统自动识别名称和项目目录规则。未启用的 Agent 不会出现在工作台和扫描结果里。</p>
+          </div>
+          <button className="secondary-button" onClick={onPickAgent}>
+            <Plus size={16} />
+            添加 Agent
+          </button>
+        </div>
+        {state.agents.map((agent) => (
+          <AgentSettingRow
+            key={agent.id}
+            agent={agent}
+            canRemove={state.agents.length > 1}
+            onPickPath={onUpdateAgentPath}
+            onRemove={onRemoveAgent}
+            onToggleEnabled={onToggleAgentEnabled}
+          />
+        ))}
+      </section>
+
+      <section>
+        <div className="section-title-row">
+          <div>
+            <h2>项目</h2>
+            <p>只管理手动添加的项目路径，不自动扫描本机项目。</p>
+          </div>
           <button className="secondary-button" onClick={onPickProject}>
             <FolderPlus size={16} />
             添加项目
@@ -1531,14 +2757,19 @@ function SettingsPanel({
         </div>
         {state.projects.length ? (
           state.projects.map((project) => (
-            <div key={project.id} className="setting-row">
-              <div>
-                <strong>{project.name}</strong>
-                <small>{project.path}</small>
+            <div key={project.id} className="setting-row project-setting-row">
+              <div className="setting-row-main">
+                <div>
+                  <strong>{project.name}</strong>
+                  <small>{project.exists ? "路径已存在" : "路径不存在"}</small>
+                </div>
+                <code>{project.path}</code>
               </div>
-              <button className="ghost-button" onClick={() => onRemoveProject(project.id)}>
-                移除
-              </button>
+              <div className="setting-row-actions">
+                <button className="ghost-button" onClick={() => onRemoveProject(project.id)}>
+                  移除
+                </button>
+              </div>
             </div>
           ))
         ) : (
@@ -1549,25 +2780,52 @@ function SettingsPanel({
   );
 }
 
-function AgentPathRow({
+function AgentSettingRow({
   agent,
-  onSave,
+  canRemove,
+  onPickPath,
+  onRemove,
+  onToggleEnabled,
 }: {
   agent: Agent;
-  onSave: (agentId: string, path: string) => void;
+  canRemove: boolean;
+  onPickPath: (agentId: string) => void;
+  onRemove: (agentId: string) => void;
+  onToggleEnabled: (agentId: string, enabled: boolean) => void | Promise<void>;
 }) {
-  const [path, setPath] = useState(agent.globalPath);
-  useEffect(() => setPath(agent.globalPath), [agent.globalPath]);
   return (
-    <div className="setting-row">
-      <div>
-        <strong>{agent.name}</strong>
-        <small>{agent.pathExists ? "路径已存在" : "路径不存在"}</small>
+    <div className={`setting-row agent-setting-row ${agent.enabled ? "" : "is-disabled"}`}>
+      <div className="setting-row-main">
+        <div>
+          <strong>{agent.name}</strong>
+          <small>
+            {agent.enabled ? (agent.pathExists ? "已启用 · 全局目录已识别" : "已启用 · 全局目录不存在") : "已停用"}
+          </small>
+        </div>
+        <div className="setting-path-grid">
+          <span>全局目录</span>
+          <code>{agent.globalPath}</code>
+          <span>项目目录规则</span>
+          <code>{"<项目根目录>/"}{agent.projectRelativePath}</code>
+        </div>
       </div>
-      <input value={path} onChange={(event) => setPath(event.target.value)} />
-      <button className="secondary-button" onClick={() => onSave(agent.id, path)}>
-        保存
-      </button>
+      <div className="setting-row-actions">
+        <label className="agent-enable-toggle">
+          <input
+            type="checkbox"
+            checked={agent.enabled}
+            onChange={(event) => void onToggleEnabled(agent.id, event.target.checked)}
+          />
+          <span>{agent.enabled ? "已启用" : "已停用"}</span>
+        </label>
+        <button className="secondary-button" onClick={() => onPickPath(agent.id)}>
+          <FolderPlus size={16} />
+          重新选择
+        </button>
+        <button className="ghost-button" disabled={!canRemove} onClick={() => onRemove(agent.id)}>
+          移除
+        </button>
+      </div>
     </div>
   );
 }
@@ -1595,9 +2853,10 @@ function DistributionDrawer({
   const drawerSkills = drawerSkillIds
     .map((skillId) => state.skills.find((skill) => skill.id === skillId))
     .filter((skill): skill is Skill => Boolean(skill));
+  const missingSkillCount = Math.max(drawerSkillIds.length - drawerSkills.length, 0);
   const title =
     drawer?.type === "preset"
-      ? `应用套装：${preset?.name ?? ""}`
+      ? `应用组合：${preset ? presetDisplayName(preset) : ""}`
       : `分发技能：${drawer?.skillIds.length ?? 0} 个`;
 
   const targetRows = [
@@ -1606,6 +2865,7 @@ function DistributionDrawer({
       label: `${agent.name} / 全局`,
       path: agent.globalPath,
       target: { agentId: agent.id, projectId: null },
+      scopeMissing: false,
     })),
     ...state.projects.flatMap((project) =>
       state.agents.map((agent) => ({
@@ -1613,6 +2873,7 @@ function DistributionDrawer({
         label: `${project.name} / ${agent.name}`,
         path: `${project.path}/${agent.projectRelativePath}`,
         target: { agentId: agent.id, projectId: project.id },
+        scopeMissing: !project.exists,
       })),
     ),
   ].map((row) => {
@@ -1620,8 +2881,13 @@ function DistributionDrawer({
       .map((skillId) => findTargetStatus(state, row.target.agentId, row.target.projectId ?? null, skillId))
       .filter((status): status is TargetStatus => Boolean(status));
     const statusLabel = summarizeTargetStatuses(statuses, drawerSkillIds.length);
-    const hasOverwriteRisk = statuses.some((status) => status.status === "conflict" || status.status === "unmanaged");
-    const hasPathRisk = statuses.some((status) => status.status === "broken" || status.status === "pathMissing" || status.status === "invalid");
+    const hasOverwriteRisk = statuses.some((status) => isOverwriteRiskStatus(status.status));
+    const hasPathMissing = statuses.some((status) => status.status === "pathMissing");
+    const hasMissingTargetRoot = statuses.some((status) => !status.rootExists);
+    const hasBlockingPathRisk = row.scopeMissing && hasPathMissing;
+    const hasCreatablePathMissing = (hasPathMissing || hasMissingTargetRoot) && !hasBlockingPathRisk;
+    const hasPathRisk = statuses.some((status) => status.status === "broken" || status.status === "invalid")
+      || hasBlockingPathRisk;
     const skillLabel = drawerSkills.length === 1
       ? drawerSkills[0].displayName
       : `${drawerSkillIds.length} 个技能`;
@@ -1633,11 +2899,17 @@ function DistributionDrawer({
       resultLabel: `将 ${skillLabel} 启用到 ${row.label}`,
       riskLabel: hasOverwriteRisk
         ? "需要覆盖目标同名内容"
-        : hasPathRisk
-          ? "目标路径存在异常"
+        : hasBlockingPathRisk
+          ? "项目路径不存在，需先修复"
+          : hasCreatablePathMissing
+            ? "目标目录不存在，应用时会自动创建"
+          : hasPathRisk
+            ? "目标路径存在异常"
           : "可直接创建软链接",
       statusLabel,
       hasOverwriteRisk,
+      hasBlockingPathRisk,
+      hasCreatablePathMissing,
       hasPathRisk,
     };
   });
@@ -1658,9 +2930,11 @@ function DistributionDrawer({
   const selectedRows = targetRows.filter((row) => selectedTargets.has(row.key));
   const selectedOverwriteRisks = selectedRows.filter((row) => row.hasOverwriteRisk).length;
   const selectedPathRisks = selectedRows.filter((row) => row.hasPathRisk).length;
+  const selectedBlockingPathRisks = selectedRows.filter((row) => row.hasBlockingPathRisk).length;
   const shouldOverwrite = selectedOverwriteRisks + selectedPathRisks > 0;
   const selectedRiskCount = selectedOverwriteRisks + selectedPathRisks;
   const previewRows = selectedRows.slice(0, 3);
+  const canApply = Boolean(targets.length && drawerSkills.length && selectedBlockingPathRisks === 0);
 
   return (
     <div className="drawer-backdrop">
@@ -1707,6 +2981,7 @@ function DistributionDrawer({
             <span>已选 {targets.length} 个目标</span>
             <span>会覆盖 {selectedOverwriteRisks} 个</span>
             <span>异常路径 {selectedPathRisks} 个</span>
+            {missingSkillCount ? <span>缺失成员 {missingSkillCount} 个</span> : null}
           </div>
           {previewRows.length ? (
             <div className="preflight-paths">
@@ -1722,22 +2997,28 @@ function DistributionDrawer({
           )}
           <p>
             确认后只创建或更新目标软链接，不会修改主库内容
-            {selectedRiskCount ? "；冲突位置会按主库优先处理。" : "。"}
+            {selectedBlockingPathRisks
+              ? "；项目路径不存在的位置需要先在设置里修复。"
+              : selectedRiskCount
+                ? "；冲突位置会按技能列表优先处理。"
+                : missingSkillCount
+                  ? "；缺失成员会跳过。"
+                  : "。"}
           </p>
         </div>
         <footer>
           {isPreset ? (
             <button className="secondary-button" disabled={!targets.length} onClick={() => void onWithdraw(targets)}>
               <Unlink size={16} />
-              收回套装
+              收回组合
             </button>
           ) : null}
           <button className="ghost-button" onClick={onClose}>
             取消
           </button>
-          <button className="primary-button" disabled={!targets.length} onClick={() => void onApply(targets, shouldOverwrite)}>
+          <button className="primary-button" disabled={!canApply} onClick={() => void onApply(targets, shouldOverwrite)}>
             <Link2 size={16} />
-            {shouldOverwrite ? "覆盖并分发" : "确认分发"}
+            {isPreset ? (shouldOverwrite ? "覆盖并应用" : "应用组合") : shouldOverwrite ? "覆盖并分发" : "确认分发"}
           </button>
         </footer>
       </aside>
@@ -1748,38 +3029,22 @@ function DistributionDrawer({
 function ImportSkillDialog({
   onClose,
   onPickLocal,
-  onInstallFromMarket,
   working,
 }: {
   onClose: () => void;
   onPickLocal: () => void;
-  onInstallFromMarket: (marketUrl: string, version: string) => void;
   working: boolean;
 }) {
-  const [mode, setMode] = useState<ImportSkillMode>("local");
-  const [marketUrl, setMarketUrl] = useState("");
-  const [version, setVersion] = useState("");
-  const [marketTouched, setMarketTouched] = useState(false);
-  const dialogRef = useDialogFocus<HTMLFormElement>(onClose);
-  const marketError = validateMarketSkillUrl(marketUrl);
-  const showMarketError = mode === "market" && marketTouched && Boolean(marketError);
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
 
   return (
     <div className="dialog-backdrop">
-      <form
+      <div
         ref={dialogRef}
         className="dialog import-skill-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-skill-title"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (mode === "market") {
-            setMarketTouched(true);
-            if (marketError) return;
-            onInstallFromMarket(marketUrl.trim(), version.trim());
-          }
-        }}
       >
         <header>
           <h2 id="import-skill-title">导入技能</h2>
@@ -1787,79 +3052,26 @@ function ImportSkillDialog({
             <X size={18} />
           </button>
         </header>
-        <div className="dialog-segmented" aria-label="选择技能来源">
-          <button
-            type="button"
-            className={mode === "local" ? "active" : ""}
-            onClick={() => setMode("local")}
-          >
-            本地文件夹
-          </button>
-          <button
-            type="button"
-            className={mode === "market" ? "active" : ""}
-            onClick={() => setMode("market")}
-          >
-            市场链接
-          </button>
-        </div>
-        {mode === "local" ? (
-          <div className="import-source-panel">
-            <button
-              type="button"
-              className="primary-button"
-              disabled={working}
-              onClick={onPickLocal}
-            >
-              <FolderPlus size={16} />
-              选择技能文件夹
-            </button>
-            <p className="field-note">需要选择包含 SKILL.md 的文件夹。</p>
-          </div>
-        ) : (
-          <>
-            <label>
-              市场链接
-              <input
-                value={marketUrl}
-                onChange={(event) => setMarketUrl(event.target.value)}
-                onBlur={() => setMarketTouched(true)}
-                placeholder="https://skills.bytedance.net/skill/skills:..."
-                aria-invalid={showMarketError}
-                aria-describedby={showMarketError ? "market-url-error" : "market-url-note"}
-                required
-              />
-            </label>
-            {showMarketError ? (
-              <p id="market-url-error" className="field-error" role="alert">{marketError}</p>
-            ) : null}
-            <label>
-              版本号
-              <input
-                value={version}
-                onChange={(event) => setVersion(event.target.value)}
-                placeholder="留空安装最新版本"
-              />
-            </label>
-            <p id="market-url-note" className="field-note">只支持公司 Skill 市场详情链接；安装结果会先进入主库，分发位置仍由你单独选择。</p>
-          </>
-        )}
+        <button
+          type="button"
+          className="import-dropzone"
+          disabled={working}
+          onClick={onPickLocal}
+          aria-describedby="local-import-note local-import-detail"
+        >
+          <span className="import-dropzone-icon" aria-hidden="true">
+            <Upload size={24} />
+          </span>
+          <strong>点击选择技能文件夹</strong>
+          <span id="local-import-note">需要包含 SKILL.md</span>
+          <small id="local-import-detail">导入后进入主库，不会自动分发</small>
+        </button>
         <footer>
           <button type="button" className="ghost-button" onClick={onClose}>
             取消
           </button>
-          {mode === "market" ? (
-            <button
-              type="submit"
-              className="primary-button"
-              disabled={working || Boolean(marketError)}
-            >
-              <Globe2 size={16} />
-              安装
-            </button>
-          ) : null}
         </footer>
-      </form>
+      </div>
     </div>
   );
 }
@@ -1876,7 +3088,14 @@ function PresetDialog({
   onSubmit: (draft: PresetDraft) => void;
 }) {
   const [next, setNext] = useState(draft);
+  const [skillQuery, setSkillQuery] = useState("");
   const dialogRef = useDialogFocus<HTMLFormElement>(onClose);
+  const selectableSkills = skills.filter((skill) =>
+    matchesQuery(skillQuery, [skill.displayName, skill.name, skill.description, skill.path, ...skill.tags]),
+  );
+  const trimmedName = next.name.trim();
+  const nameError = trimmedName ? "" : "组合名称不能为空";
+
   function toggle(skillId: string) {
     setNext((current) => ({
       ...current,
@@ -1896,22 +3115,30 @@ function PresetDialog({
         aria-labelledby="preset-dialog-title"
         onSubmit={(event) => {
           event.preventDefault();
-          onSubmit(next);
+          if (nameError) return;
+          onSubmit({
+            ...next,
+            name: trimmedName,
+            description: next.description.trim(),
+          });
         }}
       >
         <header>
-          <h2 id="preset-dialog-title">{draft.id ? "编辑技能套装" : "新建技能套装"}</h2>
+          <h2 id="preset-dialog-title">{draft.id ? "编辑技能组合" : "新建技能组合"}</h2>
           <button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭">
             <X size={18} />
           </button>
         </header>
         <label>
-          套装名称
+          组合名称
           <input
             value={next.name}
             onChange={(event) => setNext({ ...next, name: event.target.value })}
             required
+            aria-invalid={Boolean(nameError)}
+            aria-describedby={nameError ? "preset-name-error" : undefined}
           />
+          {nameError ? <p id="preset-name-error" className="field-error">{nameError}</p> : null}
         </label>
         <label>
           描述
@@ -1920,8 +3147,16 @@ function PresetDialog({
             onChange={(event) => setNext({ ...next, description: event.target.value })}
           />
         </label>
+        <label>
+          搜索成员
+          <input
+            value={skillQuery}
+            onChange={(event) => setSkillQuery(event.target.value)}
+            placeholder="搜索技能名称、描述或路径"
+          />
+        </label>
         <div className="preset-skill-picker">
-          {skills.map((skill) => (
+          {selectableSkills.map((skill) => (
             <button
               type="button"
               key={skill.id}
@@ -1935,12 +3170,18 @@ function PresetDialog({
               </span>
             </button>
           ))}
+          {!selectableSkills.length ? (
+            <EmptyState
+              title={skills.length ? "没有匹配的技能" : "技能列表里还没有技能"}
+              description={skills.length ? "换个关键词后再选择成员。" : "先导入技能，再把它们加入组合。"}
+            />
+          ) : null}
         </div>
         <footer>
           <button type="button" className="ghost-button" onClick={onClose}>
             取消
           </button>
-          <button type="submit" className="primary-button">
+          <button type="submit" className="primary-button" disabled={Boolean(nameError)}>
             保存
           </button>
         </footer>
@@ -2004,12 +3245,41 @@ function ConfirmDialog({
   );
 }
 
-function StatusPill({ status }: { status: SkillStatus }) {
+function StatusPill({ status }: { status: TransferStatus }) {
   return (
-    <span className={`status-pill ${statusTone[status]}`}>
+    <span className={`status-pill ${transferStatusTone[status]}`}>
       <span />
-      {statusText[status]}
+      {transferStatusText[status]}
     </span>
+  );
+}
+
+type DetailTone = "good" | "warn" | "danger" | "muted" | "note";
+
+function DetailBadge({ tone, children }: { tone: DetailTone; children: React.ReactNode }) {
+  return (
+    <span className={`detail-badge ${tone}`}>
+      <span />
+      {children}
+    </span>
+  );
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="detail-section">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function DetailMeta({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="detail-meta-row">
+      <span>{label}</span>
+      <div className="detail-meta-value">{children}</div>
+    </div>
   );
 }
 
@@ -2022,6 +3292,33 @@ function KeyValue({ label, value }: { label: string; value: string }) {
   );
 }
 
+function TransferStatusDetails({ item }: { item: TransferItem }) {
+  const issueStatuses = item.statuses.filter((status) => status.issue);
+  const pathRows = item.statuses.slice(0, 4);
+  return (
+    <div className="transfer-detail-block">
+      {issueStatuses.length ? (
+        <InlineWarning text={`${issueStatuses.length} 个目标需要处理：${issueStatuses[0].issue}`} />
+      ) : null}
+      <div className="transfer-detail-list">
+        {pathRows.map((status) => (
+          <div key={status.id} className="transfer-detail-row">
+            <div>
+              <strong>{status.projectName ? `${status.projectName} / ${status.agentName}` : status.agentName}</strong>
+              <small>{status.issue ?? statusText[status.status]}</small>
+            </div>
+            <StatusPill status={status.status} />
+            <InlinePathDisclosure path={status.targetPath} />
+          </div>
+        ))}
+        {item.statuses.length > pathRows.length ? (
+          <p className="muted-text">另有 {item.statuses.length - pathRows.length} 个目标位置。</p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function TagRow({ tags }: { tags: string[] }) {
   if (!tags.length) return null;
   return (
@@ -2030,6 +3327,32 @@ function TagRow({ tags }: { tags: string[] }) {
         <span key={tag}>{tag}</span>
       ))}
     </div>
+  );
+}
+
+function InlinePathDisclosure({ path }: { path: string }) {
+  return (
+    <details className="inline-path-disclosure">
+      <summary>查看路径</summary>
+      <code>{path}</code>
+    </details>
+  );
+}
+
+function PathDisclosure({ title, rows }: { title: string; rows: Array<{ label: string; path: string }> }) {
+  if (!rows.length) return null;
+  return (
+    <details className="path-disclosure">
+      <summary>{title}</summary>
+      <div className="path-disclosure-list">
+        {rows.map((row) => (
+          <div key={`${row.label}:${row.path}`}>
+            <span>{row.label}</span>
+            <code>{row.path}</code>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -2065,16 +3388,51 @@ function SkillPreview({ skill }: { skill: Skill }) {
 }
 
 function EnabledLocations({ statuses }: { statuses: TargetStatus[] }) {
-  if (!statuses.length) return null;
   return (
     <div className="enabled-list">
       <h3>启用位置</h3>
-      {statuses.map((status) => (
-        <div key={status.id}>
-          <strong>{status.projectName ? `${status.projectName} / ${status.agentName}` : `${status.agentName} / 全局`}</strong>
-          <code>{status.targetPath}</code>
-        </div>
-      ))}
+      {statuses.length ? (
+        statuses.map((status) => (
+          <div key={status.id} className="location-row">
+            <div>
+              <strong>{status.projectName ? `${status.projectName} / ${status.agentName}` : `${status.agentName} / 全局`}</strong>
+              <small>{statusText[status.status]}</small>
+            </div>
+            <InlinePathDisclosure path={status.targetPath} />
+          </div>
+        ))
+      ) : (
+        <p className="empty-inline">还没有启用位置。下一步可以点击「分发」选择 Agent 或项目。</p>
+      )}
+    </div>
+  );
+}
+
+type PresetMemberRow = {
+  id: string;
+  skill: Skill | null;
+};
+
+function PresetMemberList({ members }: { members: PresetMemberRow[] }) {
+  if (!members.length) {
+    return <p className="empty-inline">还没有成员。下一步可以点击「编辑」选择技能。</p>;
+  }
+  return (
+    <div className="preset-member-list">
+      {members.map((member) => {
+        const state = getPresetMemberState(member);
+        const MemberIcon = state.icon;
+        return (
+          <div key={member.id} className={`preset-member-row ${state.tone}`}>
+            <MemberIcon size={16} />
+            <div className="preset-member-main">
+              <strong>{member.skill?.displayName ?? member.id}</strong>
+              <small>{member.skill?.description || member.skill?.name || "已不在技能列表中"}</small>
+            </div>
+            <span>{state.label}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2112,16 +3470,19 @@ function InlineWarning({ text }: { text: string }) {
 
 function EmptyState({
   title,
+  description,
   action,
   onAction,
 }: {
   title: string;
+  description?: string;
   action?: string;
   onAction?: () => void;
 }) {
   return (
     <div className="empty-state">
       <span>{title}</span>
+      {description ? <small>{description}</small> : null}
       {action && onAction ? (
         <button className="secondary-button" onClick={onAction}>
           {action}
@@ -2185,7 +3546,7 @@ function buildHealthIssues(state: AppState): HealthIssue[] {
       kind: "pathMissing",
       label: "路径不存在",
       filter: "broken",
-      statuses: statuses.filter((status) => status.status === "pathMissing"),
+      statuses: statuses.filter((status) => isBlockingPathMissingStatus(state, status)),
     },
     {
       kind: "unmanaged",
@@ -2240,6 +3601,14 @@ function buildStatusFilterOptions(statuses: TargetStatus[]) {
   }));
 }
 
+function buildTransferFilterOptions(items: TransferItem[]) {
+  return statusFilterOrder.map((id) => ({
+    id,
+    label: transferFilterLabels[id],
+    count: items.filter((item) => transferItemMatchesFilter(item, id)).length,
+  }));
+}
+
 function skillMatchesStatusFilter(skill: Skill, filter: StatusFilter) {
   if (filter === "all") return true;
   if (filter === "issues") return skill.issueCount > 0 || !skill.hasSkillMd;
@@ -2255,12 +3624,252 @@ function targetStatusMatchesFilter(status: TargetStatus, filter: StatusFilter) {
   return status.status === filter;
 }
 
+function transferItemMatchesFilter(item: TransferItem, filter: StatusFilter) {
+  if (filter === "all") return true;
+  if (filter === "issues") return item.issueCount > 0 || item.status === "partial" || item.status === "problem";
+  if (filter === "enabled") return item.status === "enabled" || item.status === "partial";
+  if (filter === "disabled") return item.status === "disabled";
+  if (filter === "broken") return item.status === "broken" || item.status === "pathMissing";
+  return item.status === filter;
+}
+
 function isProblemStatus(status: SkillStatus) {
   return status === "unmanaged"
     || status === "conflict"
     || status === "broken"
     || status === "pathMissing"
     || status === "invalid";
+}
+
+function isBlockingPathMissingStatus(state: AppState, status: TargetStatus) {
+  if (status.status !== "pathMissing") return false;
+  if (status.targetKind === "project") {
+    const project = state.projects.find((item) => item.id === status.projectId);
+    return !project?.exists;
+  }
+  return false;
+}
+
+function buildGlobalTransferItems(state: AppState, agentId: string): TransferItem[] {
+  const workspace = state.globalWorkspaces.find((item) => item.agentId === agentId);
+  if (!workspace) return [];
+  const skillItems = workspace.statuses
+    .map((status) => buildSkillTransferItem(
+      state,
+      [status],
+      workspace.rootExists ? status.status : "disabled",
+      [{ agentId: status.agentId, projectId: null }],
+      1,
+      false,
+    ))
+    .sort(compareTransferItems);
+  return addPresetTransferItems(state, skillItems, [{ agentId, projectId: null }], 1);
+}
+
+function buildProjectTransferItems(state: AppState, projectId: string): TransferItem[] {
+  const project = state.projects.find((item) => item.id === projectId) ?? null;
+  const pathMissingIsBlocking = !project?.exists;
+  const workspaces = state.projectWorkspaces.filter((workspace) => workspace.projectId === projectId);
+  const grouped = new Map<string, TargetStatus[]>();
+  for (const workspace of workspaces) {
+    for (const status of workspace.statuses) {
+      const bucket = grouped.get(status.skillId) ?? [];
+      bucket.push(status);
+      grouped.set(status.skillId, bucket);
+    }
+  }
+  const targets = state.agents.map((agent) => ({ agentId: agent.id, projectId }));
+  const targetCount = Math.max(targets.length, 1);
+  const skillItems = [...grouped.values()]
+    .map((statuses) => buildSkillTransferItem(
+      state,
+      statuses,
+      resolveProjectTransferStatus(statuses, targetCount, !pathMissingIsBlocking),
+      targets,
+      targetCount,
+      pathMissingIsBlocking,
+    ))
+    .sort(compareTransferItems);
+  return addPresetTransferItems(state, skillItems, targets, targetCount);
+}
+
+function buildSkillTransferItem(
+  state: AppState,
+  statuses: TargetStatus[],
+  status: TransferStatus,
+  targets: DeployTarget[],
+  targetCount: number,
+  pathMissingIsBlocking: boolean,
+): TransferItem {
+  const first = statuses[0];
+  const librarySkill = state.skills.find((skill) => skill.id === first.skillId) ?? null;
+  const blockingPathCount = pathMissingIsBlocking
+    ? statuses.filter((item) => item.status === "pathMissing").length
+    : 0;
+  return {
+    id: transferItemIdForSkill(first.skillId),
+    kind: "skill",
+    skillId: first.skillId,
+    skillIds: librarySkill ? [librarySkill.id] : [],
+    skillName: librarySkill?.name ?? first.skillName,
+    displayName: librarySkill?.displayName ?? first.displayName,
+    description: librarySkill?.description ?? first.description,
+    status,
+    statuses,
+    librarySkill,
+    targetCount,
+    enabledCount: statuses.filter((item) => item.status === "enabled").length,
+    issueCount: statuses.filter((item) => isProblemStatus(item.status) && (item.status !== "pathMissing" || pathMissingIsBlocking)).length,
+    blockingPathCount,
+    targets,
+    memberCount: 1,
+    missingCount: librarySkill ? 0 : 1,
+  };
+}
+
+function addPresetTransferItems(
+  state: AppState,
+  skillItems: TransferItem[],
+  targets: DeployTarget[],
+  scopeTargetCount: number,
+) {
+  const bySkillId = new Map(skillItems.map((item) => [item.skillId, item]));
+  const presetItems = state.presets.map((preset) =>
+    buildPresetTransferItem(state, preset, bySkillId, targets, scopeTargetCount),
+  );
+  return [...skillItems, ...presetItems].sort(compareTransferItems);
+}
+
+function buildPresetTransferItem(
+  state: AppState,
+  preset: Preset,
+  skillItemsById: Map<string, TransferItem>,
+  targets: DeployTarget[],
+  scopeTargetCount: number,
+): TransferItem {
+  const children = preset.skillIds
+    .map((skillId) => skillItemsById.get(skillId))
+    .filter((item): item is TransferItem => Boolean(item));
+  const existingSkillIds = new Set(state.skills.map((skill) => skill.id));
+  const missingCount = preset.skillIds.filter((skillId) => !existingSkillIds.has(skillId)).length;
+  const statuses = children.flatMap((child) => child.statuses);
+  const status = resolvePresetTransferStatus(children, missingCount);
+  const issueCount = missingCount + children.filter((child) =>
+    child.issueCount > 0 || child.status === "partial" || child.status === "problem",
+  ).length;
+  const blockingPathCount = children.reduce((count, child) => count + child.blockingPathCount, 0);
+  const enabledCount = children.filter((child) => child.status === "enabled").length;
+  const description = preset.description || skillNames(preset, state.skills);
+  const displayName = presetDisplayName(preset);
+
+  return {
+    id: transferItemIdForPreset(preset.id),
+    kind: "composition",
+    skillId: preset.id,
+    skillIds: preset.skillIds.filter((skillId) => existingSkillIds.has(skillId)),
+    presetId: preset.id,
+    skillName: displayName,
+    displayName,
+    description,
+    status,
+    statuses,
+    librarySkill: null,
+    targetCount: Math.max(scopeTargetCount, 1),
+    enabledCount,
+    issueCount,
+    blockingPathCount,
+    targets,
+    memberCount: Math.max(preset.skillIds.length, 1),
+    missingCount,
+    children,
+  };
+}
+
+function resolvePresetTransferStatus(children: TransferItem[], missingCount: number): TransferStatus {
+  if (missingCount > 0) return "problem";
+  if (!children.length) return "disabled";
+  if (children.some((child) => child.status === "pathMissing")) return "pathMissing";
+  if (children.some((child) => child.status === "conflict")) return "conflict";
+  if (children.some((child) => child.status === "unmanaged")) return "unmanaged";
+  if (children.some((child) => child.status === "broken")) return "broken";
+  if (children.some((child) => child.status === "invalid" || child.status === "problem")) return "problem";
+  const enabledCount = children.filter((child) => child.status === "enabled").length;
+  if (enabledCount === children.length) return "enabled";
+  if (enabledCount > 0 || children.some((child) => child.status === "partial")) return "partial";
+  return "disabled";
+}
+
+function resolveProjectTransferStatus(
+  statuses: TargetStatus[],
+  targetCount: number,
+  pathMissingIsDeployable: boolean,
+): TransferStatus {
+  const effectiveStatuses = statuses.map((status) =>
+    pathMissingIsDeployable && status.status === "pathMissing" ? "disabled" : status.status,
+  );
+  if (effectiveStatuses.some((status) => status === "conflict")) return "conflict";
+  if (effectiveStatuses.some((status) => status === "unmanaged")) return "unmanaged";
+  if (effectiveStatuses.some((status) => status === "broken")) return "broken";
+  if (effectiveStatuses.some((status) => status === "pathMissing")) return "pathMissing";
+  if (effectiveStatuses.some((status) => status === "invalid")) return "invalid";
+  const enabledCount = effectiveStatuses.filter((status) => status === "enabled").length;
+  if (enabledCount > 0 && enabledCount < targetCount) return "partial";
+  if (enabledCount >= targetCount && targetCount > 0) return "enabled";
+  return "disabled";
+}
+
+function compareTransferItems(left: TransferItem, right: TransferItem) {
+  const statusDiff = transferStatusWeight(left.status) - transferStatusWeight(right.status);
+  if (statusDiff) return statusDiff;
+  return left.displayName.localeCompare(right.displayName, "zh-Hans-CN");
+}
+
+function transferStatusWeight(status: TransferStatus) {
+  const order: Record<TransferStatus, number> = {
+    conflict: 0,
+    unmanaged: 1,
+    broken: 2,
+    pathMissing: 3,
+    invalid: 4,
+    problem: 5,
+    partial: 6,
+    enabled: 7,
+    disabled: 8,
+  };
+  return order[status];
+}
+
+function canApplyTransferItem(item: TransferItem) {
+  return item.skillIds.length > 0
+    && !hasBlockingPathRisk(item)
+    && (
+      item.status === "disabled"
+      || item.status === "partial"
+      || item.status === "conflict"
+      || item.status === "unmanaged"
+      || item.status === "broken"
+      || item.status === "invalid"
+      || item.status === "problem"
+    );
+}
+
+function canWithdrawTransferItem(item: TransferItem) {
+  return item.skillIds.length > 0
+    && (item.status === "enabled" || item.status === "partial");
+}
+
+function hasBlockingPathRisk(item: TransferItem) {
+  return item.blockingPathCount > 0;
+}
+
+function itemHasOverwriteRisk(item: TransferItem) {
+  return item.statuses.some((status) => isOverwriteRiskStatus(status.status))
+    || item.status === "broken"
+    || item.status === "invalid";
+}
+
+function isOverwriteRiskStatus(status: SkillStatus) {
+  return status === "conflict" || status === "unmanaged" || status === "broken" || status === "invalid";
 }
 
 function mergeReport(left: OperationReport, right: OperationReport): OperationReport {
@@ -2270,6 +3879,68 @@ function mergeReport(left: OperationReport, right: OperationReport): OperationRe
     conflicts: [...left.conflicts, ...right.conflicts],
     errors: [...left.errors, ...right.errors],
   };
+}
+
+function OperationReportEmpty(): OperationReport {
+  return {
+    changed: 0,
+    skipped: 0,
+    conflicts: [],
+    errors: [],
+  };
+}
+
+function transferItemIdForSkill(skillId: string) {
+  return `skill:${skillId}`;
+}
+
+function transferItemIdForPreset(presetId: string) {
+  return `composition:${presetId}`;
+}
+
+function presetMatchesQuery(preset: Preset, skills: Skill[], query: string) {
+  const memberNames = preset.skillIds.flatMap((skillId) => {
+    const skill = skills.find((item) => item.id === skillId);
+    return skill ? [skill.displayName, skill.name, skill.description, skill.path, ...skill.tags] : [skillId];
+  });
+  return matchesQuery(query, [preset.name, preset.description, ...memberNames]);
+}
+
+function buildPresetMemberRows(preset: Preset, skills: Skill[]): PresetMemberRow[] {
+  const byId = new Map(skills.map((skill) => [skill.id, skill]));
+  return preset.skillIds.map((skillId) => ({
+    id: skillId,
+    skill: byId.get(skillId) ?? null,
+  }));
+}
+
+function getPresetMemberState(member: PresetMemberRow) {
+  if (!member.skill) {
+    return { tone: "warn" as const, label: "缺失", icon: AlertTriangle };
+  }
+  if (!member.skill.hasSkillMd) {
+    return { tone: "warn" as const, label: "格式异常", icon: AlertTriangle };
+  }
+  if (member.skill.issueCount > 0) {
+    return { tone: "warn" as const, label: `${member.skill.issueCount} 个问题`, icon: AlertTriangle };
+  }
+  return { tone: "good" as const, label: "正常", icon: CheckCircle2 };
+}
+
+function existingPresetSkillIds(state: AppState, presetId: string) {
+  const preset = state.presets.find((item) => item.id === presetId);
+  if (!preset) return [];
+  const existing = new Set(state.skills.map((skill) => skill.id));
+  return preset.skillIds.filter((skillId) => existing.has(skillId));
+}
+
+function toggleSetValue(setter: React.Dispatch<React.SetStateAction<Set<string>>>, value: string) {
+  setter((current) => {
+    const next = new Set(current);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    return next;
+  });
 }
 
 function formatOperationReport(report: OperationReport, label: string) {
@@ -2291,7 +3962,7 @@ function cleanErrorMessage(cause: unknown) {
 
 function formatActionError(cause: unknown) {
   const message = cleanErrorMessage(cause);
-  return `${message}。下一步：检查输入内容、目标路径和目录权限后重试；如果是市场安装失败，确认公司网络和登录状态。`;
+  return `${message}。下一步：检查输入内容、目标路径和目录权限后重试。`;
 }
 
 function fileNameFromPath(path: string) {
@@ -2310,15 +3981,16 @@ function defaultSelectionForView(
     return state.skills[0] ? { type: "skill", id: state.skills[0].id } : null;
   }
   if (view === "global") {
-    const status = state.globalWorkspaces.find((workspace) => workspace.agentId === agentId)?.statuses[0];
-    return status ? { type: "status", id: status.id } : null;
+    const items = buildGlobalTransferItems(state, agentId);
+    const item = items.find((transferItem) => transferItem.status === "disabled") ?? items[0];
+    return item ? { type: "transferSkill", id: item.id } : null;
   }
   if (view === "projects") {
     const resolvedProjectId = resolveProjectId(state, projectId);
-    const status = state.projectWorkspaces.find(
-      (workspace) => workspace.projectId === resolvedProjectId && workspace.agentId === projectAgentId,
-    )?.statuses[0];
-    return status ? { type: "status", id: status.id } : null;
+    if (!resolvedProjectId) return null;
+    const items = buildProjectTransferItems(state, resolvedProjectId);
+    const item = items.find((transferItem) => transferItem.status === "disabled") ?? items[0];
+    return item ? { type: "transferSkill", id: item.id } : null;
   }
   if (view === "presets") {
     return state.presets[0] ? { type: "preset", id: state.presets[0].id } : null;
@@ -2345,19 +4017,13 @@ function selectionBelongsToScope(
     return selection.type === "skill" && state.skills.some((skill) => skill.id === selection.id);
   }
   if (view === "global") {
-    const workspace = state.globalWorkspaces.find((item) => item.agentId === agentId);
-    return selection.type === "status" && Boolean(
-      workspace?.statuses.some((status) => status.id === selection.id),
-    );
+    return selection.type === "transferSkill"
+      && buildGlobalTransferItems(state, agentId).some((item) => item.id === selection.id);
   }
   if (view === "projects") {
     if (!projectId) return false;
-    const workspace = state.projectWorkspaces.find(
-      (item) => item.projectId === projectId && item.agentId === projectAgentId,
-    );
-    return selection.type === "status" && Boolean(
-      workspace?.statuses.some((status) => status.id === selection.id),
-    );
+    return selection.type === "transferSkill"
+      && buildProjectTransferItems(state, projectId).some((item) => item.id === selection.id);
   }
   if (view === "presets") {
     return selection.type === "preset" && state.presets.some((preset) => preset.id === selection.id);
@@ -2448,6 +4114,10 @@ function skillNames(preset: Preset, skills: Skill[]) {
     .join("、");
 }
 
+function presetDisplayName(preset: Preset) {
+  return preset.name.trim() || "未命名组合";
+}
+
 function slugifyClient(value: string) {
   const slug = value
     .trim()
@@ -2455,29 +4125,4 @@ function slugifyClient(value: string) {
     .replace(/[\\/:\.\s]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || value;
-}
-
-function marketSkillIdFromUrlClient(value: string) {
-  const tail = value.trim().split("/skill/skills:")[1];
-  if (!tail) return "";
-  const pathPart = tail.split(/[?#]/)[0].split("/-/")[0].replace(/\/+$/, "");
-  const parts = pathPart.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? "";
-}
-
-function validateMarketSkillUrl(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return "请粘贴公司 Skill 市场的技能详情链接。";
-  try {
-    const url = new URL(trimmed);
-    if (url.hostname !== "skills.bytedance.net") {
-      return "只支持 skills.bytedance.net 的技能详情链接。";
-    }
-    if (!url.pathname.includes("/skill/skills:") || !marketSkillIdFromUrlClient(trimmed)) {
-      return "链接需要包含 /skill/skills:... 的技能详情路径。";
-    }
-    return null;
-  } catch {
-    return "链接格式不正确，请粘贴完整的 https://skills.bytedance.net/skill/skills:... 链接。";
-  }
 }

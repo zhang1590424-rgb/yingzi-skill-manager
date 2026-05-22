@@ -11,19 +11,26 @@ pub fn run() {
             commands::get_app_state,
             commands::create_skill,
             commands::import_skill,
-            commands::install_skill_from_market,
             commands::delete_skill,
             commands::deploy_skill,
             commands::withdraw_skill,
             commands::adopt_skill_from_target,
             commands::add_project,
+            commands::add_agent,
             commands::remove_project,
+            commands::remove_agent,
             commands::update_agent_path,
             commands::upsert_preset,
             commands::delete_preset,
             commands::apply_preset,
             commands::withdraw_preset,
-            commands::open_path
+            commands::open_path,
+            commands::get_onboarding_status,
+            commands::detect_default_agents,
+            commands::set_agent_enabled,
+            commands::set_onboarding_completed,
+            commands::list_unmanaged_for_onboarding,
+            commands::bulk_adopt_skills
         ])
         .run(tauri::generate_context!())
         .expect("failed to run skill hub");

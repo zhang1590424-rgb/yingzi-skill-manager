@@ -163,3 +163,35 @@ impl SkillStatus {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardingStatus {
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAgent {
+    pub id: String,
+    pub name: String,
+    pub global_path: String,
+    pub project_relative_path: String,
+    pub exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkAdoptItem {
+    pub agent_id: String,
+    pub project_id: Option<String>,
+    pub skill_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkAdoptReport {
+    pub state: AppState,
+    pub changed: usize,
+    pub errors: Vec<String>,
+}

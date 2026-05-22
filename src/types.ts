@@ -109,5 +109,28 @@ export interface OperationReport {
   errors: string[];
 }
 
-export type ViewKey = "library" | "global" | "projects" | "presets" | "settings";
+export interface OnboardingStatus {
+  completed: boolean;
+}
 
+export interface DetectedAgent {
+  id: string;
+  name: string;
+  globalPath: string;
+  projectRelativePath: string;
+  exists: boolean;
+}
+
+export interface BulkAdoptItem {
+  agentId: string;
+  projectId?: string | null;
+  skillName: string;
+}
+
+export interface BulkAdoptReport {
+  state: AppState;
+  changed: number;
+  errors: string[];
+}
+
+export type ViewKey = "library" | "global" | "projects" | "presets" | "settings";

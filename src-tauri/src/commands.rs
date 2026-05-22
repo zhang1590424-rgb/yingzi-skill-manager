@@ -1,4 +1,7 @@
-use crate::models::{AppState, DeployTarget, OperationReport};
+use crate::models::{
+    AppState, BulkAdoptItem, BulkAdoptReport, DeployTarget, DetectedAgent, OnboardingStatus,
+    OperationReport, TargetStatus,
+};
 use crate::storage::{
     copy_dir_all, create_dir_symlink, is_link_to, remove_path, resolve_symlink_target, slugify,
     Store,
@@ -7,7 +10,6 @@ use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tauri::command]
 pub fn get_app_state() -> Result<AppState, String> {
@@ -63,53 +65,6 @@ pub fn import_skill(source_path: String) -> Result<AppState, String> {
             return Err(anyhow!("主库里已经存在同名技能：{}", skill_id));
         }
         copy_dir_all(&source, &target)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn install_skill_from_market(
-    market_url: String,
-    version: Option<String>,
-) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        let spec = parse_market_skill_url(&market_url)?;
-        let skill_id = slugify(&spec.skill);
-        let target = store.skill_path(&skill_id);
-        if fs::symlink_metadata(&target).is_ok() {
-            return Err(anyhow!("主库里已经存在同名技能：{}", skill_id));
-        }
-
-        let staging = create_market_staging_dir(&skill_id)?;
-        let install_result = install_market_skill_into_staging(
-            &staging,
-            &spec,
-            version
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty()),
-        );
-        if let Err(error) = install_result {
-            let _ = fs::remove_dir_all(&staging);
-            return Err(error);
-        }
-
-        let installed_skill = find_installed_skill_dir(&staging, &spec.skill, &skill_id)?
-            .ok_or_else(|| {
-                anyhow!(
-                    "市场安装命令已结束，但没有在临时项目里找到 {} 的 SKILL.md",
-                    spec.skill
-                )
-            })?;
-
-        if let Err(error) = copy_dir_all(&installed_skill, &target) {
-            let _ = remove_path(&target);
-            let _ = fs::remove_dir_all(&staging);
-            return Err(error.context("无法复制市场技能到主库"));
-        }
-
-        let _ = fs::remove_dir_all(&staging);
         store.load_app_state()
     })
 }
@@ -183,38 +138,48 @@ pub fn adopt_skill_from_target(
 ) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
-        let agent = store.find_agent(&agent_id)?;
-        let root = if let Some(project_id) = &project_id {
-            let project = store.find_project(project_id)?;
-            PathBuf::from(project.path).join(agent.project_relative_path)
-        } else {
-            PathBuf::from(agent.global_path)
-        };
-        let source = root.join(&skill_name);
-        if !source.exists() && fs::symlink_metadata(&source).is_err() {
-            return Err(anyhow!("目标技能不存在：{}", source.display()));
-        }
-
-        let source_for_copy = resolve_symlink_target(&source).unwrap_or_else(|| source.clone());
-        if !source_for_copy.join("SKILL.md").exists() {
-            return Err(anyhow!("该目标缺少 SKILL.md，暂不自动入库"));
-        }
-
-        let skill_id = slugify(&skill_name);
-        let library_target = store.skill_path(&skill_id);
-        if !library_target.exists() {
-            copy_dir_all(&source_for_copy, &library_target)?;
-        }
-
-        if fs::symlink_metadata(&source).is_ok() {
-            remove_path(&source)?;
-        }
-        if let Some(parent) = source.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        create_dir_symlink(&library_target, &source)?;
+        adopt_skill_internal(&store, &agent_id, project_id.as_deref(), &skill_name)?;
         store.load_app_state()
     })
+}
+
+fn adopt_skill_internal(
+    store: &Store,
+    agent_id: &str,
+    project_id: Option<&str>,
+    skill_name: &str,
+) -> Result<()> {
+    let agent = store.find_agent(agent_id)?;
+    let root = if let Some(project_id) = project_id {
+        let project = store.find_project(project_id)?;
+        PathBuf::from(project.path).join(agent.project_relative_path)
+    } else {
+        PathBuf::from(agent.global_path)
+    };
+    let source = root.join(skill_name);
+    if !source.exists() && fs::symlink_metadata(&source).is_err() {
+        return Err(anyhow!("目标技能不存在：{}", source.display()));
+    }
+
+    let source_for_copy = resolve_symlink_target(&source).unwrap_or_else(|| source.clone());
+    if !source_for_copy.join("SKILL.md").exists() {
+        return Err(anyhow!("该目标缺少 SKILL.md，暂不自动入库"));
+    }
+
+    let skill_id = slugify(skill_name);
+    let library_target = store.skill_path(&skill_id);
+    if !library_target.exists() {
+        copy_dir_all(&source_for_copy, &library_target)?;
+    }
+
+    if fs::symlink_metadata(&source).is_ok() {
+        remove_path(&source)?;
+    }
+    if let Some(parent) = source.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    create_dir_symlink(&library_target, &source)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -227,10 +192,28 @@ pub fn add_project(path: String) -> Result<AppState, String> {
 }
 
 #[tauri::command]
+pub fn add_agent(global_path: String) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.add_agent(Path::new(&global_path))?;
+        store.load_app_state()
+    })
+}
+
+#[tauri::command]
 pub fn remove_project(project_id: String) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
         store.remove_project(&project_id)?;
+        store.load_app_state()
+    })
+}
+
+#[tauri::command]
+pub fn remove_agent(agent_id: String) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.remove_agent(&agent_id)?;
         store.load_app_state()
     })
 }
@@ -253,7 +236,7 @@ pub fn upsert_preset(
 ) -> Result<AppState, String> {
     run(|| {
         if name.trim().is_empty() {
-            return Err(anyhow!("技能套装名称不能为空"));
+            return Err(anyhow!("技能组合名称不能为空"));
         }
         let store = Store::new()?;
         store.upsert_preset(id, name, description, skill_ids)?;
@@ -403,236 +386,65 @@ fn target_skill_path(store: &Store, target: &DeployTarget, skill_id: &str) -> Re
     Ok(root.join(skill_id))
 }
 
-struct MarketSkillSpec {
-    source: String,
-    skill: String,
-    version: Option<String>,
-}
-
-fn parse_market_skill_url(value: &str) -> Result<MarketSkillSpec> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow!("请粘贴 Skill 市场链接"));
-    }
-
-    let normalized = if trimmed.starts_with("skills.bytedance.net/") {
-        format!("https://{}", trimmed)
-    } else {
-        trimmed.to_string()
-    };
-    if !normalized.starts_with("https://skills.bytedance.net/")
-        && !normalized.starts_with("http://skills.bytedance.net/")
-    {
-        return Err(anyhow!("当前只支持 skills.bytedance.net 的技能详情链接"));
-    }
-
-    let marker = "/skill/skills:";
-    let (_, tail) = normalized
-        .split_once(marker)
-        .ok_or_else(|| anyhow!("请使用 Skill 市场里的技能详情链接"))?;
-    let path_part = tail
-        .split(['?', '#'])
-        .next()
-        .unwrap_or_default()
-        .split("/-/")
-        .next()
-        .unwrap_or_default()
-        .trim_matches('/');
-    let mut parts = path_part
-        .split('/')
-        .filter(|part| !part.trim().is_empty())
-        .collect::<Vec<_>>();
-    if parts.len() < 2 {
-        return Err(anyhow!("无法从市场链接识别技能来源和名称"));
-    }
-
-    let skill = parts.pop().unwrap_or_default().to_string();
-    let source = parts.join("/");
-    let version = query_value(&normalized, "version");
-    Ok(MarketSkillSpec {
-        source,
-        skill,
-        version,
-    })
-}
-
-fn query_value(url: &str, key: &str) -> Option<String> {
-    let query = url.split_once('?')?.1.split('#').next().unwrap_or_default();
-    for pair in query.split('&') {
-        let Some((name, value)) = pair.split_once('=') else {
-            continue;
-        };
-        if name == key && !value.trim().is_empty() {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
-}
-
-fn create_market_staging_dir(skill_id: &str) -> Result<PathBuf> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("无法生成临时目录时间戳")?
-        .as_millis();
-    let staging = std::env::temp_dir().join(format!("skill-hub-market-{}-{}", skill_id, timestamp));
-    fs::create_dir_all(&staging)?;
-    fs::write(
-        staging.join("AGENTS.md"),
-        "# 临时 Skill 安装目录\n\n该目录由技能中枢临时创建，用于从公司 Skill 市场安装后导入主库。\n",
-    )?;
-    Ok(staging)
-}
-
-fn install_market_skill_into_staging(
-    staging: &Path,
-    spec: &MarketSkillSpec,
-    requested_version: Option<&str>,
-) -> Result<()> {
-    let version = requested_version.or(spec.version.as_deref());
-    let mut command = Command::new("npx");
-    command
-        .current_dir(staging)
-        .env("npm_config_registry", "https://bnpm.byted.org")
-        .env("NPM_CONFIG_REGISTRY", "https://bnpm.byted.org")
-        .arg("-y")
-        .arg("skills@latest")
-        .arg("add")
-        .arg(&spec.source)
-        .arg("--skill")
-        .arg(&spec.skill)
-        .arg("--agent")
-        .arg("codex")
-        .arg("--copy")
-        .arg("-y");
-    if let Some(version) = version {
-        command.arg("--version").arg(version);
-    }
-
-    let output = command
-        .output()
-        .context("无法启动官方 skills 安装器，请确认本机已安装 Node.js / npx")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "市场安装失败：{}",
-            command_output_excerpt(&output.stdout, &output.stderr)
-        ));
-    }
-    Ok(())
-}
-
-fn command_output_excerpt(stdout: &[u8], stderr: &[u8]) -> String {
-    let mut content = String::new();
-    let stdout = String::from_utf8_lossy(stdout);
-    let stderr = String::from_utf8_lossy(stderr);
-    if !stdout.trim().is_empty() {
-        content.push_str(stdout.trim());
-    }
-    if !stderr.trim().is_empty() {
-        if !content.is_empty() {
-            content.push('\n');
-        }
-        content.push_str(stderr.trim());
-    }
-    if content.trim().is_empty() {
-        return "官方安装器没有返回错误详情".to_string();
-    }
-    content
-        .lines()
-        .rev()
-        .take(12)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn find_installed_skill_dir(
-    staging: &Path,
-    market_skill: &str,
-    skill_id: &str,
-) -> Result<Option<PathBuf>> {
-    for candidate in [
-        staging.join(".codex").join("skills").join(market_skill),
-        staging.join(".codex").join("skills").join(skill_id),
-    ] {
-        if candidate.join("SKILL.md").exists() {
-            return Ok(Some(candidate));
-        }
-    }
-    find_skill_dir_recursive(staging, market_skill, skill_id, 0)
-}
-
-fn find_skill_dir_recursive(
-    root: &Path,
-    market_skill: &str,
-    skill_id: &str,
-    depth: usize,
-) -> Result<Option<PathBuf>> {
-    if depth > 6 {
-        return Ok(None);
-    }
-    if root.join("SKILL.md").exists() {
-        let name = root
-            .file_name()
-            .map(|value| value.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if name == market_skill || name == skill_id || slugify(&name) == skill_id {
-            return Ok(Some(root.to_path_buf()));
-        }
-    }
-    for entry in fs::read_dir(root).with_context(|| format!("无法读取 {}", root.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !path.is_dir() || name == "node_modules" {
-            continue;
-        }
-        if let Some(found) = find_skill_dir_recursive(&path, market_skill, skill_id, depth + 1)? {
-            return Ok(Some(found));
-        }
-    }
-    Ok(None)
-}
-
 fn run<T>(operation: impl FnOnce() -> Result<T>) -> Result<T, String> {
     operation().map_err(|error| format!("{:#}", error))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[tauri::command]
+pub fn get_onboarding_status() -> Result<OnboardingStatus, String> {
+    run(|| Store::new()?.onboarding_status())
+}
 
-    #[test]
-    fn parses_market_skill_detail_url() {
-        let spec = parse_market_skill_url(
-            "https://skills.bytedance.net/skill/skills:code.byted.org/devinfra/market-skills/skill-creator",
-        )
-        .unwrap();
+#[tauri::command]
+pub fn detect_default_agents() -> Result<Vec<DetectedAgent>, String> {
+    run(|| Store::new()?.detect_default_agents())
+}
 
-        assert_eq!(spec.source, "code.byted.org/devinfra/market-skills");
-        assert_eq!(spec.skill, "skill-creator");
-        assert_eq!(spec.version, None);
-    }
+#[tauri::command]
+pub fn set_agent_enabled(agent_id: String, enabled: bool) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.set_agent_enabled(&agent_id, enabled)?;
+        store.load_app_state()
+    })
+}
 
-    #[test]
-    fn strips_market_check_suffix() {
-        let spec = parse_market_skill_url(
-            "https://skills.bytedance.net/skill/skills:skills.byted.org/default/public/bits-code-guard/-/check",
-        )
-        .unwrap();
+#[tauri::command]
+pub fn set_onboarding_completed(value: bool) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.set_onboarding_completed(value)?;
+        store.load_app_state()
+    })
+}
 
-        assert_eq!(spec.source, "skills.byted.org/default/public");
-        assert_eq!(spec.skill, "bits-code-guard");
-    }
+#[tauri::command]
+pub fn list_unmanaged_for_onboarding() -> Result<Vec<TargetStatus>, String> {
+    run(|| Store::new()?.list_unmanaged_in_enabled_agents())
+}
 
-    #[test]
-    fn parses_optional_market_version() {
-        let spec = parse_market_skill_url(
-            "skills.bytedance.net/skill/skills:code.byted.org/devinfra/market-skills/skill-creator?version=1.0.14",
-        )
-        .unwrap();
-
-        assert_eq!(spec.version, Some("1.0.14".to_string()));
-    }
+#[tauri::command]
+pub fn bulk_adopt_skills(items: Vec<BulkAdoptItem>) -> Result<BulkAdoptReport, String> {
+    run(|| {
+        let store = Store::new()?;
+        let mut changed = 0usize;
+        let mut errors = Vec::new();
+        for item in items {
+            match adopt_skill_internal(
+                &store,
+                &item.agent_id,
+                item.project_id.as_deref(),
+                &item.skill_name,
+            ) {
+                Ok(()) => changed += 1,
+                Err(error) => errors.push(format!("{}：{:#}", item.skill_name, error)),
+            }
+        }
+        let state = store.load_app_state()?;
+        Ok(BulkAdoptReport {
+            state,
+            changed,
+            errors,
+        })
+    })
 }

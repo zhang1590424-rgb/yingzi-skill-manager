@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppState, DeployTarget, OperationReport } from "./types";
+import type {
+  AppState,
+  BulkAdoptItem,
+  BulkAdoptReport,
+  DeployTarget,
+  DetectedAgent,
+  OnboardingStatus,
+  OperationReport,
+  TargetStatus,
+} from "./types";
 
 export async function getAppState(): Promise<AppState> {
   if (!isTauriRuntime()) return mockState();
@@ -14,17 +23,6 @@ export async function createSkill(name: string, description: string): Promise<Ap
 export async function importSkill(sourcePath: string): Promise<AppState> {
   if (!isTauriRuntime()) return mockState(sourcePath);
   return invoke<AppState>("import_skill", { sourcePath });
-}
-
-export async function installSkillFromMarket(
-  marketUrl: string,
-  version: string,
-): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(marketUrl, version);
-  return invoke<AppState>("install_skill_from_market", {
-    marketUrl,
-    version: version.trim() ? version.trim() : null,
-  });
 }
 
 export async function deleteSkill(skillId: string): Promise<AppState> {
@@ -63,9 +61,19 @@ export async function addProject(path: string): Promise<AppState> {
   return invoke<AppState>("add_project", { path });
 }
 
+export async function addAgent(globalPath: string): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState(globalPath);
+  return invoke<AppState>("add_agent", { globalPath });
+}
+
 export async function removeProject(projectId: string): Promise<AppState> {
   if (!isTauriRuntime()) return mockState(projectId);
   return invoke<AppState>("remove_project", { projectId });
+}
+
+export async function removeAgent(agentId: string): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState(agentId);
+  return invoke<AppState>("remove_agent", { agentId });
 }
 
 export async function updateAgentPath(agentId: string, path: string): Promise<AppState> {
@@ -111,6 +119,62 @@ export async function openPath(path: string): Promise<void> {
     return;
   }
   return invoke<void>("open_path", { path });
+}
+
+export async function getOnboardingStatus(): Promise<OnboardingStatus> {
+  if (!isTauriRuntime()) return { completed: false };
+  return invoke<OnboardingStatus>("get_onboarding_status");
+}
+
+export async function detectDefaultAgents(): Promise<DetectedAgent[]> {
+  if (!isTauriRuntime()) {
+    return [
+      {
+        id: "trae",
+        name: "Trae",
+        globalPath: "/Users/mock/.trae/skills",
+        projectRelativePath: ".trae/skills",
+        exists: true,
+      },
+      {
+        id: "codex",
+        name: "Codex",
+        globalPath: "/Users/mock/.codex/skills",
+        projectRelativePath: ".codex/skills",
+        exists: true,
+      },
+      {
+        id: "claude-code",
+        name: "Claude Code",
+        globalPath: "/Users/mock/.claude/skills",
+        projectRelativePath: ".claude/skills",
+        exists: false,
+      },
+    ];
+  }
+  return invoke<DetectedAgent[]>("detect_default_agents");
+}
+
+export async function setAgentEnabled(agentId: string, enabled: boolean): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState(agentId, String(enabled));
+  return invoke<AppState>("set_agent_enabled", { agentId, enabled });
+}
+
+export async function setOnboardingCompleted(value: boolean): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState(String(value));
+  return invoke<AppState>("set_onboarding_completed", { value });
+}
+
+export async function listUnmanagedForOnboarding(): Promise<TargetStatus[]> {
+  if (!isTauriRuntime()) return [];
+  return invoke<TargetStatus[]>("list_unmanaged_for_onboarding");
+}
+
+export async function bulkAdoptSkills(items: BulkAdoptItem[]): Promise<BulkAdoptReport> {
+  if (!isTauriRuntime()) {
+    return { state: mockState(), changed: items.length, errors: [] };
+  }
+  return invoke<BulkAdoptReport>("bulk_adopt_skills", { items });
 }
 
 function isTauriRuntime() {
@@ -270,7 +334,7 @@ function mockState(..._values: string[]): AppState {
     presets: [
       {
         id: "dev",
-        name: "开发协作",
+        name: "开发组合",
         description: "代码审查、会话收尾和开发质量检查。",
         skillIds: ["code-review", "session-wrap-up"],
       },

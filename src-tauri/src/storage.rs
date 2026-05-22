@@ -1,6 +1,6 @@
 use crate::models::{
-    Agent, AgentWorkspace, AppState, Preset, Project, ProjectAgentWorkspace, Skill, SkillStatus,
-    TargetKind, TargetStatus,
+    Agent, AgentWorkspace, AppState, DetectedAgent, OnboardingStatus, Preset, Project,
+    ProjectAgentWorkspace, Skill, SkillStatus, TargetKind, TargetStatus,
 };
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
@@ -16,6 +16,13 @@ pub struct Store {
     pub skills_root: PathBuf,
     pub database_path: PathBuf,
     pub config_path: PathBuf,
+}
+
+struct InferredAgentConfig {
+    id: String,
+    name: String,
+    global_path: String,
+    project_relative_path: String,
 }
 
 impl Store {
@@ -100,33 +107,21 @@ impl Store {
             "#,
         )?;
 
+        migrate_agents_table(&conn)?;
+
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
         if count == 0 {
-            let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
-            let defaults = vec![
-                (
-                    "trae",
-                    "Trae",
-                    home.join(".trae").join("skills"),
-                    ".trae/skills",
-                ),
-                (
-                    "codex",
-                    "Codex",
-                    home.join(".codex").join("skills"),
-                    ".codex/skills",
-                ),
-                (
-                    "claude-code",
-                    "Claude Code",
-                    home.join(".claude").join("skills"),
-                    ".claude/skills",
-                ),
-            ];
-            for (id, name, global_path, project_relative_path) in defaults {
+            for detected in default_agent_definitions()? {
+                let enabled_value = if detected.exists { 1 } else { 0 };
                 conn.execute(
-                    "INSERT INTO agents (id, name, global_path, project_relative_path, enabled) VALUES (?1, ?2, ?3, ?4, 1)",
-                    params![id, name, global_path.to_string_lossy(), project_relative_path],
+                    "INSERT INTO agents (id, name, global_path, project_relative_path, enabled) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        detected.id,
+                        detected.name,
+                        detected.global_path,
+                        detected.project_relative_path,
+                        enabled_value
+                    ],
                 )?;
             }
         }
@@ -137,7 +132,14 @@ impl Store {
     pub fn load_app_state(&self) -> Result<AppState> {
         let agents = self.load_agents()?;
         let projects = self.load_projects()?;
-        let mut skills = self.scan_library_skills()?;
+        let mut extra_issues: Vec<String> = Vec::new();
+        let mut skills = match self.scan_library_skills() {
+            Ok(value) => value,
+            Err(error) => {
+                extra_issues.push(format!("无法扫描技能主库：{:#}", error));
+                Vec::new()
+            }
+        };
         let presets = self.load_presets()?;
 
         let mut global_workspaces = Vec::new();
@@ -149,8 +151,22 @@ impl Store {
                 continue;
             }
             let root = PathBuf::from(&agent.global_path);
-            let statuses =
-                self.scan_target_root(&skills, &root, TargetKind::Global, agent, None)?;
+            let statuses = match self.scan_target_root(
+                &skills,
+                &root,
+                TargetKind::Global,
+                agent,
+                None,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    extra_issues.push(format!(
+                        "{} / 全局：{:#}",
+                        agent.name, error
+                    ));
+                    Vec::new()
+                }
+            };
             all_statuses.extend(statuses.clone());
             global_workspaces.push(AgentWorkspace {
                 agent_id: agent.id.clone(),
@@ -167,13 +183,22 @@ impl Store {
                     continue;
                 }
                 let root = PathBuf::from(&project.path).join(&agent.project_relative_path);
-                let statuses = self.scan_target_root(
+                let statuses = match self.scan_target_root(
                     &skills,
                     &root,
                     TargetKind::Project,
                     agent,
                     Some(project),
-                )?;
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        extra_issues.push(format!(
+                            "{} / {}：{:#}",
+                            agent.name, project.name, error
+                        ));
+                        Vec::new()
+                    }
+                };
                 all_statuses.extend(statuses.clone());
                 project_workspaces.push(ProjectAgentWorkspace {
                     project_id: project.id.clone(),
@@ -208,9 +233,12 @@ impl Store {
             skill.issue_count = local_issue_count + *issue_counts.get(&skill.id).unwrap_or(&0);
         }
 
-        self.persist_deployments(&all_statuses)?;
+        // persist_deployments 失败不阻断首屏，仅追加一条 issue。
+        if let Err(error) = self.persist_deployments(&all_statuses) {
+            extra_issues.push(format!("无法写入部署快照：{:#}", error));
+        }
 
-        let issues = all_statuses
+        let mut issues: Vec<String> = all_statuses
             .iter()
             .filter_map(|status| {
                 status.issue.as_ref().map(|issue| {
@@ -227,6 +255,7 @@ impl Store {
                 })
             })
             .collect();
+        issues.extend(extra_issues);
 
         Ok(AppState {
             base_dir: self.base_dir.to_string_lossy().to_string(),
@@ -296,7 +325,7 @@ impl Store {
         })?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>()
-            .context("无法读取技能套装")
+            .context("无法读取技能组合")
     }
 
     pub fn scan_library_skills(&self) -> Result<Vec<Skill>> {
@@ -306,7 +335,10 @@ impl Store {
         }
 
         for entry in fs::read_dir(&self.skills_root).context("无法读取技能主库")? {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -348,12 +380,24 @@ impl Store {
         project: Option<&Project>,
     ) -> Result<Vec<TargetStatus>> {
         let root_exists = root.exists();
+        let scope_exists = project
+            .map(|project| Path::new(&project.path).exists())
+            .unwrap_or(true);
+        let root_missing_is_deployable = !root_exists && scope_exists;
         let mut statuses = Vec::new();
         let mut seen = HashSet::new();
 
         for skill in skills {
             let target_path = root.join(&skill.name);
-            let status = analyze_target_path(&target_path, Path::new(&skill.path), root_exists);
+            let status = if root_missing_is_deployable {
+                PathAnalysis {
+                    status: SkillStatus::Disabled,
+                    link_target: None,
+                    issue: None,
+                }
+            } else {
+                analyze_target_path(&target_path, Path::new(&skill.path), root_exists)
+            };
             seen.insert(skill.name.clone());
             statuses.push(TargetStatus {
                 id: status_id(&skill.name, &target_kind, &agent.id, project.map(|p| &p.id)),
@@ -375,16 +419,63 @@ impl Store {
         }
 
         if root_exists {
-            for entry in
-                fs::read_dir(root).with_context(|| format!("无法读取 {}", root.display()))?
-            {
-                let entry = entry?;
+            let entries = match fs::read_dir(root) {
+                Ok(value) => value,
+                Err(error) => {
+                    // 读取失败时退化为：保留主库已经匹配出的 statuses，整体 workspace 给一条占位 issue。
+                    statuses.push(TargetStatus {
+                        id: status_id("__unreadable__", &target_kind, &agent.id, project.map(|p| &p.id)),
+                        skill_id: "__unreadable__".to_string(),
+                        skill_name: "__unreadable__".to_string(),
+                        display_name: "目录无法读取".to_string(),
+                        description: format!("无法读取 {}：{}", root.display(), error),
+                        target_kind: target_kind.clone(),
+                        agent_id: agent.id.clone(),
+                        agent_name: agent.name.clone(),
+                        project_id: project.map(|p| p.id.clone()),
+                        project_name: project.map(|p| p.name.clone()),
+                        status: SkillStatus::Invalid,
+                        target_path: root.to_string_lossy().to_string(),
+                        link_target: None,
+                        issue: Some(format!("无法读取目录：{}", error)),
+                        root_exists,
+                    });
+                    statuses.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+                    return Ok(statuses);
+                }
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(value) => value,
+                    Err(error) => {
+                        statuses.push(TargetStatus {
+                            id: status_id("__entry_error__", &target_kind, &agent.id, project.map(|p| &p.id)),
+                            skill_id: "__entry_error__".to_string(),
+                            skill_name: "__entry_error__".to_string(),
+                            display_name: "目录条目无法读取".to_string(),
+                            description: format!("{}", error),
+                            target_kind: target_kind.clone(),
+                            agent_id: agent.id.clone(),
+                            agent_name: agent.name.clone(),
+                            project_id: project.map(|p| p.id.clone()),
+                            project_name: project.map(|p| p.name.clone()),
+                            status: SkillStatus::Invalid,
+                            target_path: root.to_string_lossy().to_string(),
+                            link_target: None,
+                            issue: Some(format!("目录条目无法读取：{}", error)),
+                            root_exists,
+                        });
+                        continue;
+                    }
+                };
                 let name = entry.file_name().to_string_lossy().to_string();
                 if seen.contains(&name) {
                     continue;
                 }
                 let path = entry.path();
-                let metadata = fs::symlink_metadata(&path)?;
+                let Ok(metadata) = fs::symlink_metadata(&path) else {
+                    continue;
+                };
                 let is_skill_like = metadata.file_type().is_symlink()
                     || path.join("SKILL.md").exists()
                     || path.join("README.md").exists();
@@ -463,6 +554,40 @@ impl Store {
         Ok(())
     }
 
+    pub fn add_agent(&self, path: &Path) -> Result<()> {
+        let agent = infer_agent_config(path)?;
+        let conn = self.connection()?;
+        conn.execute(
+            "INSERT INTO agents (id, name, global_path, project_relative_path, enabled)
+             VALUES (?1, ?2, ?3, ?4, 1)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               global_path = excluded.global_path,
+               project_relative_path = excluded.project_relative_path,
+               enabled = 1",
+            params![
+                agent.id,
+                agent.name,
+                agent.global_path,
+                agent.project_relative_path
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_agent(&self, agent_id: &str) -> Result<()> {
+        let conn = self.connection()?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
+        if count <= 1 {
+            return Err(anyhow!("至少需要保留一个 Agent"));
+        }
+        let changed = conn.execute("DELETE FROM agents WHERE id = ?1", params![agent_id])?;
+        if changed == 0 {
+            return Err(anyhow!("未找到智能体应用：{}", agent_id));
+        }
+        Ok(())
+    }
+
     pub fn remove_project(&self, project_id: &str) -> Result<()> {
         let conn = self.connection()?;
         conn.execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
@@ -470,11 +595,15 @@ impl Store {
     }
 
     pub fn update_agent_path(&self, agent_id: &str, path: &Path) -> Result<()> {
+        let agent = infer_agent_config(path)?;
         let conn = self.connection()?;
-        conn.execute(
-            "UPDATE agents SET global_path = ?1 WHERE id = ?2",
-            params![path.to_string_lossy(), agent_id],
+        let changed = conn.execute(
+            "UPDATE agents SET global_path = ?1, project_relative_path = ?2 WHERE id = ?3",
+            params![agent.global_path, agent.project_relative_path, agent_id],
         )?;
+        if changed == 0 {
+            return Err(anyhow!("未找到智能体应用：{}", agent_id));
+        }
         Ok(())
     }
 
@@ -485,12 +614,28 @@ impl Store {
         description: String,
         skill_ids: Vec<String>,
     ) -> Result<String> {
-        let preset_id = id.unwrap_or_else(|| slugify(&name));
+        let trimmed_name = name.trim().to_string();
+        let preset_id_from_request = id.and_then(|value| {
+            let value = value.trim().to_string();
+            (!value.is_empty()).then_some(value)
+        });
+        let is_create = preset_id_from_request.is_none();
+        let preset_id = preset_id_from_request.unwrap_or_else(|| slugify(&trimmed_name));
         let conn = self.connection()?;
+        if is_create {
+            let existing: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM presets WHERE id = ?1",
+                params![preset_id],
+                |row| row.get(0),
+            )?;
+            if existing > 0 {
+                return Err(anyhow!("已经存在同名技能组合：{}", trimmed_name));
+            }
+        }
         conn.execute(
             "INSERT INTO presets (id, name, description) VALUES (?1, ?2, ?3)
              ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description",
-            params![preset_id, name, description],
+            params![preset_id, trimmed_name, description.trim()],
         )?;
         conn.execute(
             "DELETE FROM preset_skills WHERE preset_id = ?1",
@@ -533,8 +678,190 @@ impl Store {
         self.load_presets()?
             .into_iter()
             .find(|preset| preset.id == preset_id)
-            .ok_or_else(|| anyhow!("未找到技能套装：{}", preset_id))
+            .ok_or_else(|| anyhow!("未找到技能组合：{}", preset_id))
     }
+
+    pub fn detect_default_agents(&self) -> Result<Vec<DetectedAgent>> {
+        default_agent_definitions()
+    }
+
+    pub fn set_agent_enabled(&self, agent_id: &str, enabled: bool) -> Result<()> {
+        let conn = self.connection()?;
+        let value = if enabled { 1 } else { 0 };
+        let changed = conn.execute(
+            "UPDATE agents SET enabled = ?1 WHERE id = ?2",
+            params![value, agent_id],
+        )?;
+        if changed == 0 {
+            return Err(anyhow!("未找到智能体应用：{}", agent_id));
+        }
+        Ok(())
+    }
+
+    pub fn onboarding_status(&self) -> Result<OnboardingStatus> {
+        let conn = self.connection()?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'onboarding_completed'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(OnboardingStatus {
+            completed: matches!(value.as_deref(), Some("true")),
+        })
+    }
+
+    pub fn set_onboarding_completed(&self, value: bool) -> Result<()> {
+        let conn = self.connection()?;
+        let stored = if value { "true" } else { "false" };
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('onboarding_completed', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![stored],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_unmanaged_in_enabled_agents(&self) -> Result<Vec<TargetStatus>> {
+        let agents = self.load_agents()?;
+        let skills = self.scan_library_skills()?;
+        let mut result = Vec::new();
+        for agent in &agents {
+            if !agent.enabled {
+                continue;
+            }
+            let root = PathBuf::from(&agent.global_path);
+            if !root.exists() {
+                continue;
+            }
+            let statuses =
+                self.scan_target_root(&skills, &root, TargetKind::Global, agent, None)?;
+            for status in statuses {
+                if status.status == SkillStatus::Unmanaged {
+                    result.push(status);
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
+fn default_agent_definitions() -> Result<Vec<DetectedAgent>> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
+    let entries = vec![
+        ("trae", "Trae", ".trae"),
+        ("codex", "Codex", ".codex"),
+        ("claude-code", "Claude Code", ".claude"),
+    ];
+    let mut result = Vec::new();
+    for (id, name, root_dir) in entries {
+        let global_path = home.join(root_dir).join("skills");
+        let project_relative_path = format!("{}/skills", root_dir);
+        let exists = global_path.exists();
+        result.push(DetectedAgent {
+            id: id.to_string(),
+            name: name.to_string(),
+            global_path: global_path.to_string_lossy().to_string(),
+            project_relative_path,
+            exists,
+        });
+    }
+    Ok(result)
+}
+
+fn migrate_agents_table(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(agents)")?;
+    let column_names: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    if !column_names.iter().any(|col| col == "enabled") {
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+        // 按当前默认 Agent 探测结果回填一次：未安装的 Agent 默认禁用，避免老库升级后首屏炸出空 workspace。
+        if let Ok(detected_list) = default_agent_definitions() {
+            for detected in detected_list {
+                let enabled_value = if detected.exists { 1 } else { 0 };
+                conn.execute(
+                    "UPDATE agents SET enabled = ?1 WHERE id = ?2",
+                    params![enabled_value, detected.id],
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn infer_agent_config(path: &Path) -> Result<InferredAgentConfig> {
+    let global_path = path
+        .canonicalize()
+        .with_context(|| format!("无法读取 Agent 全局 Skill 目录 {}", path.display()))?;
+    if !global_path.is_dir() {
+        return Err(anyhow!("请选择一个 Agent 全局 Skill 目录"));
+    }
+    let folder_name = global_path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .ok_or_else(|| anyhow!("无法识别 Agent 全局 Skill 目录"))?;
+    if !folder_name.eq_ignore_ascii_case("skills") {
+        return Err(anyhow!("请选择以 skills 结尾的 Agent 全局 Skill 目录"));
+    }
+    let agent_root_name = global_path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .map(|value| value.to_string_lossy().to_string())
+        .ok_or_else(|| anyhow!("无法从全局 Skill 目录推断 Agent"))?;
+    let key = agent_root_name.trim_start_matches('.').to_ascii_lowercase();
+    let id = infer_agent_id(&key);
+    let name = infer_agent_name(&key);
+    let project_relative_path = PathBuf::from(&agent_root_name)
+        .join("skills")
+        .to_string_lossy()
+        .to_string();
+
+    Ok(InferredAgentConfig {
+        id,
+        name,
+        global_path: global_path.to_string_lossy().to_string(),
+        project_relative_path,
+    })
+}
+
+fn infer_agent_id(key: &str) -> String {
+    match key {
+        "codex" => "codex".to_string(),
+        "trae" => "trae".to_string(),
+        "claude" | "claude-code" | "claude_code" => "claude-code".to_string(),
+        _ => slugify(key),
+    }
+}
+
+fn infer_agent_name(key: &str) -> String {
+    match key {
+        "codex" => "Codex".to_string(),
+        "trae" => "Trae".to_string(),
+        "claude" | "claude-code" | "claude_code" => "Claude Code".to_string(),
+        _ => titleize_agent_name(key),
+    }
+}
+
+fn titleize_agent_name(key: &str) -> String {
+    key.split(|ch: char| ch == '-' || ch == '_' || ch == '.')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 struct PathAnalysis {
@@ -716,7 +1043,8 @@ fn parse_skill_metadata(fallback_name: &str, content: &str) -> SkillMetadata {
                             }
                         }
                         "description" => {
-                            if value.is_empty() || value.starts_with('|') || value.starts_with('>') {
+                            if value.is_empty() || value.starts_with('|') || value.starts_with('>')
+                            {
                                 collecting = Some("description");
                                 description_lines.clear();
                             } else {
@@ -753,7 +1081,8 @@ fn parse_skill_metadata(fallback_name: &str, content: &str) -> SkillMetadata {
     }
 
     if description.is_empty() || matches!(description.as_str(), "|" | ">") {
-        description = first_meaningful_line(&readable_body).unwrap_or_else(|| "暂无描述".to_string());
+        description =
+            first_meaningful_line(&readable_body).unwrap_or_else(|| "暂无描述".to_string());
     }
 
     SkillMetadata {
@@ -810,8 +1139,7 @@ fn remove_preview_noise(value: &str) -> String {
         text.replace_range(start..end, "");
     }
 
-    text
-        .replace(TELEMETRY_START, "")
+    text.replace(TELEMETRY_START, "")
         .replace(TELEMETRY_END, "")
         .trim()
         .to_string()
