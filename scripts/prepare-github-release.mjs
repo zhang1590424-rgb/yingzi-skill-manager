@@ -6,6 +6,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const tauriConfigPath = path.join(rootDir, "src-tauri", "tauri.conf.json");
 const releaseDir = path.join(rootDir, "release");
 const productName = "影子";
+const artifactName = "yingzi";
 
 const tauriConfig = JSON.parse(await readFile(tauriConfigPath, "utf8"));
 const baseVersion = tauriConfig.version;
@@ -62,11 +63,11 @@ dmgFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
 await mkdir(releaseDir, { recursive: true });
 
-const dmgFileName = `${productName}_${releaseVersion}_${releaseArch}.dmg`;
+const dmgFileName = `${artifactName}_${releaseVersion}_${releaseArch}.dmg`;
 const dmgDestination = path.join(releaseDir, dmgFileName);
 await cp(dmgFiles[0].path, dmgDestination);
 
-const installGuidePath = path.join(releaseDir, `${productName}_安装说明.md`);
+const installGuidePath = path.join(releaseDir, `${artifactName}_install_guide.md`);
 await writeFile(
   installGuidePath,
   `# ${productName} ${releaseVersion} 测试版安装说明

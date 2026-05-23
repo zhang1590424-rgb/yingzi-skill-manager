@@ -92,13 +92,13 @@
 | 产物 | 路径 | 是否提交 Git | 用途 |
 |---|---|---|---|
 | `影子.app` | 项目根目录 | 否 | 本机快速打开检查 |
-| `影子_<version>_arm64.dmg` | `release/` | 否 | 上传到 GitHub Release |
-| `影子_安装说明.md` | `release/` | 否 | 上传到 GitHub Release，或复制进 Release Notes |
+| `yingzi_<version>_arm64.dmg` | `release/` | 否 | 上传到 GitHub Release |
+| `yingzi_install_guide.md` | `release/` | 否 | 上传到 GitHub Release，或复制进 Release Notes |
 
 版本命名：
 
 - tag 使用 `v<version>-test.<n>`，例如 `v0.1.0-test.1`。
-- DMG 文件名使用 `影子_<version>_arm64.dmg`，例如 `影子_0.1.0-test.1_arm64.dmg`。
+- DMG 文件名使用 ASCII，避免 GitHub asset 名称被压缩；格式为 `yingzi_<version>_arm64.dmg`，例如 `yingzi_0.1.0-test.1_arm64.dmg`。
 - Release 标题使用 `影子 0.1.0 测试版 1`。
 
 ## 7. Release 文案
@@ -116,7 +116,7 @@ Release Notes 必须包含：
 ```markdown
 ## 下载
 
-- Apple Silicon Mac：下载 `影子_<version>_arm64.dmg`
+- Apple Silicon Mac：下载 `yingzi_<version>_arm64.dmg`
 
 ## 安装
 
