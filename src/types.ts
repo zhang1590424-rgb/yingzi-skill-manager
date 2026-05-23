@@ -53,6 +53,8 @@ export interface TargetStatus {
   targetPath: string;
   linkTarget?: string | null;
   issue?: string | null;
+  issueKey?: string | null;
+  ignored?: boolean;
   rootExists: boolean;
 }
 

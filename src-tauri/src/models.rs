@@ -52,6 +52,8 @@ pub struct TargetStatus {
     pub target_path: String,
     pub link_target: Option<String>,
     pub issue: Option<String>,
+    pub issue_key: Option<String>,
+    pub ignored: bool,
     pub root_exists: bool,
 }
 

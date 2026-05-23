@@ -106,6 +106,10 @@ impl Store {
               target_path TEXT NOT NULL,
               link_target TEXT
             );
+            CREATE TABLE IF NOT EXISTS ignored_issues (
+              issue_key TEXT PRIMARY KEY,
+              ignored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             "#,
         )?;
 
@@ -356,6 +360,7 @@ impl Store {
         agent: &Agent,
         project: Option<&Project>,
     ) -> Result<Vec<TargetStatus>> {
+        let ignored_issue_keys = self.load_ignored_issue_keys().unwrap_or_default();
         let root_exists = root.exists();
         let scope_exists = project
             .map(|project| Path::new(&project.path).exists())
@@ -391,6 +396,8 @@ impl Store {
                 target_path: target_path.to_string_lossy().to_string(),
                 link_target: status.link_target,
                 issue: status.issue,
+                issue_key: None,
+                ignored: false,
                 root_exists,
             });
         }
@@ -420,8 +427,11 @@ impl Store {
                         target_path: root.to_string_lossy().to_string(),
                         link_target: None,
                         issue: Some(format!("无法读取目录：{}", error)),
+                        issue_key: None,
+                        ignored: false,
                         root_exists,
                     });
+                    apply_issue_metadata(&mut statuses, &ignored_issue_keys);
                     statuses.sort_by(|a, b| a.display_name.cmp(&b.display_name));
                     return Ok(statuses);
                 }
@@ -450,6 +460,8 @@ impl Store {
                             target_path: root.to_string_lossy().to_string(),
                             link_target: None,
                             issue: Some(format!("目录条目无法读取：{}", error)),
+                            issue_key: None,
+                            ignored: false,
                             root_exists,
                         });
                         continue;
@@ -463,9 +475,100 @@ impl Store {
                 let Ok(metadata) = fs::symlink_metadata(&path) else {
                     continue;
                 };
-                let is_skill_like = metadata.file_type().is_symlink()
-                    || path.join("SKILL.md").exists()
-                    || path.join("README.md").exists();
+                if metadata.file_type().is_symlink() {
+                    let link_target = resolve_symlink_target(&path);
+                    let Some(source_path) = link_target.clone() else {
+                        statuses.push(TargetStatus {
+                            id: status_id(&name, &target_kind, &agent.id, project.map(|p| &p.id)),
+                            skill_id: name.clone(),
+                            skill_name: name.clone(),
+                            display_name: name.clone(),
+                            description: "软链接目标无法读取".to_string(),
+                            target_kind: target_kind.clone(),
+                            agent_id: agent.id.clone(),
+                            agent_name: agent.name.clone(),
+                            project_id: project.map(|p| p.id.clone()),
+                            project_name: project.map(|p| p.name.clone()),
+                            status: SkillStatus::Broken,
+                            target_path: path.to_string_lossy().to_string(),
+                            link_target: None,
+                            issue: Some("软链接目标无法读取".to_string()),
+                            issue_key: None,
+                            ignored: false,
+                            root_exists,
+                        });
+                        continue;
+                    };
+                    if !source_path.exists() {
+                        statuses.push(TargetStatus {
+                            id: status_id(&name, &target_kind, &agent.id, project.map(|p| &p.id)),
+                            skill_id: name.clone(),
+                            skill_name: name.clone(),
+                            display_name: name.clone(),
+                            description: "软链接目标不存在".to_string(),
+                            target_kind: target_kind.clone(),
+                            agent_id: agent.id.clone(),
+                            agent_name: agent.name.clone(),
+                            project_id: project.map(|p| p.id.clone()),
+                            project_name: project.map(|p| p.name.clone()),
+                            status: SkillStatus::Broken,
+                            target_path: path.to_string_lossy().to_string(),
+                            link_target: Some(source_path.to_string_lossy().to_string()),
+                            issue: Some("软链接目标不存在".to_string()),
+                            issue_key: None,
+                            ignored: false,
+                            root_exists,
+                        });
+                        continue;
+                    }
+                    let skill_md = source_path.join("SKILL.md");
+                    if !skill_md.exists() {
+                        statuses.push(TargetStatus {
+                            id: status_id(&name, &target_kind, &agent.id, project.map(|p| &p.id)),
+                            skill_id: name.clone(),
+                            skill_name: name.clone(),
+                            display_name: name.clone(),
+                            description: "软链接目标不是有效 Skill".to_string(),
+                            target_kind: target_kind.clone(),
+                            agent_id: agent.id.clone(),
+                            agent_name: agent.name.clone(),
+                            project_id: project.map(|p| p.id.clone()),
+                            project_name: project.map(|p| p.name.clone()),
+                            status: SkillStatus::Invalid,
+                            target_path: path.to_string_lossy().to_string(),
+                            link_target: Some(source_path.to_string_lossy().to_string()),
+                            issue: Some("软链接目标缺少 SKILL.md".to_string()),
+                            issue_key: None,
+                            ignored: false,
+                            root_exists,
+                        });
+                        continue;
+                    }
+                    let content = fs::read_to_string(skill_md).unwrap_or_default();
+                    let parsed = parse_skill_metadata(&name, &content);
+                    statuses.push(TargetStatus {
+                        id: status_id(&name, &target_kind, &agent.id, project.map(|p| &p.id)),
+                        skill_id: name.clone(),
+                        skill_name: name.clone(),
+                        display_name: parsed.display_name,
+                        description: parsed.description,
+                        target_kind: target_kind.clone(),
+                        agent_id: agent.id.clone(),
+                        agent_name: agent.name.clone(),
+                        project_id: project.map(|p| p.id.clone()),
+                        project_name: project.map(|p| p.name.clone()),
+                        status: SkillStatus::Unmanaged,
+                        target_path: path.to_string_lossy().to_string(),
+                        link_target: Some(source_path.to_string_lossy().to_string()),
+                        issue: Some("目标目录有技能，但尚未进入主库".to_string()),
+                        issue_key: None,
+                        ignored: false,
+                        root_exists,
+                    });
+                    continue;
+                }
+                let is_skill_like =
+                    path.join("SKILL.md").exists() || path.join("README.md").exists();
                 if !is_skill_like {
                     continue;
                 }
@@ -489,13 +592,95 @@ impl Store {
                     link_target: resolve_symlink_target(&path)
                         .map(|p| p.to_string_lossy().to_string()),
                     issue: Some("目标目录有技能，但尚未进入主库".to_string()),
+                    issue_key: None,
+                    ignored: false,
                     root_exists,
                 });
             }
         }
 
+        apply_issue_metadata(&mut statuses, &ignored_issue_keys);
         statuses.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         Ok(statuses)
+    }
+
+    pub fn load_ignored_issue_keys(&self) -> Result<HashSet<String>> {
+        let conn = self.connection()?;
+        let mut statement = conn.prepare("SELECT issue_key FROM ignored_issues")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut keys = HashSet::new();
+        for row in rows {
+            keys.insert(row?);
+        }
+        Ok(keys)
+    }
+
+    pub fn ignore_issue_keys(&self, keys: &[String]) -> Result<()> {
+        let mut conn = self.connection()?;
+        let transaction = conn.transaction()?;
+        for key in keys {
+            transaction.execute(
+                "INSERT INTO ignored_issues (issue_key) VALUES (?1)
+                 ON CONFLICT(issue_key) DO UPDATE SET ignored_at = CURRENT_TIMESTAMP",
+                params![key],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn resolve_broken_issue_keys(
+        &self,
+        keys: &[String],
+    ) -> Result<crate::models::OperationReport> {
+        let requested: HashSet<&str> = keys.iter().map(String::as_str).collect();
+        let state = self.load_app_state()?;
+        let statuses = state
+            .global_workspaces
+            .iter()
+            .flat_map(|workspace| workspace.statuses.iter())
+            .chain(
+                state
+                    .project_workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.statuses.iter()),
+            );
+        let mut report = crate::models::OperationReport::empty();
+
+        for status in statuses {
+            let Some(issue_key) = &status.issue_key else {
+                continue;
+            };
+            if !requested.contains(issue_key.as_str()) {
+                continue;
+            }
+            if status.status != SkillStatus::Broken {
+                report.skipped += 1;
+                continue;
+            }
+            let target_path = PathBuf::from(&status.target_path);
+            let Ok(metadata) = fs::symlink_metadata(&target_path) else {
+                report.skipped += 1;
+                continue;
+            };
+            if !metadata.file_type().is_symlink() {
+                report
+                    .errors
+                    .push(format!("{} 不是软链接，已跳过", status.target_path));
+                continue;
+            }
+            match fs::remove_file(&target_path) {
+                Ok(()) => report.changed += 1,
+                Err(error) => report
+                    .errors
+                    .push(format!("{}：{}", status.target_path, error)),
+            }
+        }
+
+        if report.changed + report.skipped + report.errors.len() < keys.len() {
+            report.skipped += keys.len() - report.changed - report.skipped - report.errors.len();
+        }
+        Ok(report)
     }
 
     pub fn persist_deployments(&self, statuses: &[TargetStatus]) -> Result<()> {
@@ -1260,4 +1445,40 @@ fn status_id(
         TargetKind::Project => format!("project-{}", project_id.map(String::as_str).unwrap_or("")),
     };
     format!("{}-{}-{}", scope, agent_id, skill_name)
+}
+
+fn apply_issue_metadata(statuses: &mut Vec<TargetStatus>, ignored_issue_keys: &HashSet<String>) {
+    for status in statuses.iter_mut() {
+        if !is_issue_status(&status.status) {
+            continue;
+        }
+        let issue_key = issue_key_for_status(status);
+        status.ignored = ignored_issue_keys.contains(&issue_key);
+        status.issue_key = Some(issue_key);
+    }
+    statuses.retain(|status| !status.ignored);
+}
+
+fn is_issue_status(status: &SkillStatus) -> bool {
+    matches!(
+        status,
+        SkillStatus::Unmanaged
+            | SkillStatus::Conflict
+            | SkillStatus::Broken
+            | SkillStatus::PathMissing
+            | SkillStatus::Invalid
+    )
+}
+
+fn issue_key_for_status(status: &TargetStatus) -> String {
+    format!(
+        "status={:?}|kind={:?}|agent={}|project={}|skill={}|target={}|link={}",
+        status.status,
+        status.target_kind,
+        status.agent_id,
+        status.project_id.as_deref().unwrap_or(""),
+        status.skill_name,
+        status.target_path,
+        status.link_target.as_deref().unwrap_or("")
+    )
 }

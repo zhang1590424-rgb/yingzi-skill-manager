@@ -40,6 +40,7 @@ import {
   detectDefaultAgents,
   getAppState,
   getOnboardingStatus,
+  ignoreIssueKeys,
   installBuiltinPresetSkills,
   importSkill,
   listUnmanagedForOnboarding,
@@ -49,6 +50,7 @@ import {
   scanBuiltinPresetSkills,
   setAgentEnabled,
   setOnboardingCompleted,
+  resolveBrokenIssueKeys,
   updateAgentPath,
   upsertPreset,
   withdrawSkill,
@@ -217,7 +219,9 @@ type HealthIssue = {
   summary: string;
   filter: StatusFilter;
   status?: TargetStatus;
+  statuses: TargetStatus[];
   skill?: Skill;
+  skills: Skill[];
 };
 
 type ConfirmDialogState = {
@@ -246,11 +250,12 @@ export default function App() {
   const [selectedProjectAgentId, setSelectedProjectAgentId] = useState<string>("codex");
   const [checkedSkillIds, setCheckedSkillIds] = useState<Set<string>>(new Set());
   const [drawer, setDrawer] = useState<DrawerState>(null);
+  const [issuePanel, setIssuePanel] = useState<HealthIssue | null>(null);
   const [importSkillOpen, setImportSkillOpen] = useState(false);
   const [presetDraft, setPresetDraft] = useState<PresetDraft | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const [expandedTransferPresetIds, setExpandedTransferPresetIds] = useState<Set<string>>(new Set());
-  const activeOverlayKey = drawer ? "drawer" : importSkillOpen ? "import" : presetDraft ? "preset" : confirmDialog ? "confirm" : "";
+  const activeOverlayKey = drawer ? "drawer" : issuePanel ? "issues" : importSkillOpen ? "import" : presetDraft ? "preset" : confirmDialog ? "confirm" : "";
   const activeOverlayKeyRef = useRef(activeOverlayKey);
 
   async function load(showSpinner = false) {
@@ -595,22 +600,14 @@ export default function App() {
   }
 
   function selectHealthIssue(issue: HealthIssue) {
-    setQuery("");
-    setStatusFilter(issue.filter);
-    if (issue.skill) {
+    if (!issue.statuses.length && issue.skill) {
+      setQuery("");
+      setStatusFilter(issue.filter);
       setView("library");
       setSelected({ type: "skill", id: issue.skill.id });
       return;
     }
-    if (!issue.status) return;
-    if (issue.status.targetKind === "project") {
-      setView("projects");
-      setSelectedProjectId(issue.status.projectId ?? null);
-    } else {
-      setView("global");
-      setSelectedAgentId(issue.status.agentId);
-    }
-    setSelected({ type: "transferSkill", id: transferItemIdForSkill(issue.status.skillId) });
+    setIssuePanel(issue);
   }
 
   function changeStatusFilter(nextFilter: StatusFilter) {
@@ -848,6 +845,38 @@ export default function App() {
           };
           return refreshAfterReport(report, "已导入存量技能", "overlay");
         }, undefined, "overlay");
+      },
+    });
+  }
+
+  async function ignoreStatuses(statuses: TargetStatus[]) {
+    const issueKeys = issueKeysForStatuses(statuses);
+    if (!issueKeys.length) return;
+    await runAction(async () => {
+      const next = await ignoreIssueKeys(issueKeys);
+      setState(next);
+      setIssuePanel(null);
+    }, `已忽略 ${issueKeys.length} 个问题`, "overlay");
+  }
+
+  function resolveIssueStatuses(statuses: TargetStatus[]) {
+    const brokenStatuses = statuses.filter((status) => status.status === "broken");
+    const issueKeys = issueKeysForStatuses(brokenStatuses);
+    if (!issueKeys.length) return;
+    setConfirmDialog({
+      title: `处理 ${issueKeys.length} 个失效链接`,
+      message: "将删除这些已经指向不存在位置的软链接。不会删除主库 Skill，也不会删除真实 Skill 文件夹。",
+      details: brokenStatuses.slice(0, 5).map((status) => status.targetPath),
+      confirmLabel: "确认处理",
+      tone: "warn",
+      onConfirm: async () => {
+        const ok = await runAction(async () => {
+          const report = await resolveBrokenIssueKeys(issueKeys);
+          const handled = await refreshAfterReport(report, "已处理失效链接", "overlay");
+          if (handled) setIssuePanel(null);
+          return handled;
+        }, undefined, "overlay");
+        return ok;
       },
     });
   }
@@ -1357,7 +1386,11 @@ export default function App() {
     const skillProblemCount = skill.issueCount || (!skill.hasSkillMd ? 1 : 0);
 
     return (
-      <ContextPanel title={skill.displayName}>
+      <ContextPanel
+        title={skill.displayName}
+        onClose={() => setSelected(null)}
+        closeLabel="关闭技能详情"
+      >
         <div className="detail-status-row">
           <DetailBadge tone={locations.length ? "good" : "muted"}>
             {locations.length ? `已启用 ${locations.length} 处` : "未启用"}
@@ -1539,46 +1572,37 @@ export default function App() {
         {!state && !loading ? (
           <StartupFallback error={error} onRetry={() => void load(true)} />
         ) : (
-          <>
-            {state ? (
-              <HealthOverview
-                issues={healthIssues}
-                onSelect={selectHealthIssue}
-              />
-            ) : null}
-
-            <section className={workspaceClassName}>
-              <div className="list-pane">
-                <PaneHeader
-                  view={view}
-                  title={view === "global" ? selectedAgent?.name ?? "全局 Agent" : view === "projects" ? selectedProject?.name ?? "项目应用" : undefined}
-                  subtitle={view === "settings" ? "对象和本地路径" : view === "projects" && selectedProject ? "项目整体应用到所有 Agent" : view === "global" && selectedAgent ? selectedAgent.globalPath : undefined}
-                  count={
-                    view === "library"
-                      ? filteredSkills.length
-                      : view === "global"
+          <section className={workspaceClassName}>
+            <div className="list-pane">
+              <PaneHeader
+                view={view}
+                title={view === "global" ? selectedAgent?.name ?? "全局 Agent" : view === "projects" ? selectedProject?.name ?? "项目应用" : undefined}
+                subtitle={view === "settings" ? "对象和本地路径" : view === "projects" && selectedProject ? "项目整体应用到所有 Agent" : view === "global" && selectedAgent ? selectedAgent.globalPath : undefined}
+                count={
+                  view === "library"
+                    ? filteredSkills.length
+                    : view === "global"
+                      ? filteredTransferItems.length
+                      : view === "projects"
                         ? filteredTransferItems.length
-                        : view === "projects"
-                          ? filteredTransferItems.length
-                          : view === "presets"
-                            ? queriedPresets.length
-                            : (state?.agents.length ?? 0) + (state?.projects.length ?? 0)
-                  }
-                />
-                {loading ? (
-                  <div className="loading-state">
-                    <Loader2 className="spin" size={20} />
-                    正在读取本地技能状态
-                  </div>
-                ) : (
-                  renderMiddle()
-                )}
-              </div>
-              {shouldShowDetailPane ? (
-                <div className="detail-pane">{renderDetail()}</div>
-              ) : null}
-            </section>
-          </>
+                        : view === "presets"
+                          ? queriedPresets.length
+                          : (state?.agents.length ?? 0) + (state?.projects.length ?? 0)
+                }
+              />
+              {loading ? (
+                <div className="loading-state">
+                  <Loader2 className="spin" size={20} />
+                  正在读取本地技能状态
+                </div>
+              ) : (
+                renderMiddle()
+              )}
+            </div>
+            {shouldShowDetailPane ? (
+              <div className="detail-pane">{renderDetail()}</div>
+            ) : null}
+          </section>
         )}
 
         {checkedSkillIds.size > 0 ? (
@@ -1649,6 +1673,29 @@ export default function App() {
               }
               return true;
             }, undefined, "overlay");
+          }}
+        />
+      ) : null}
+
+      {state && issuePanel ? (
+        <IssueResolutionDrawer
+          issue={issuePanel}
+          working={working}
+          onClose={() => setIssuePanel(null)}
+          onIgnore={(statuses) => void ignoreStatuses(statuses)}
+          onResolve={resolveIssueStatuses}
+          onOpenStatus={(status) => {
+            setIssuePanel(null);
+            setQuery("");
+            setStatusFilter(status.status === "broken" ? "broken" : issuePanel.filter);
+            if (status.targetKind === "project") {
+              setView("projects");
+              setSelectedProjectId(status.projectId ?? null);
+            } else {
+              setView("global");
+              setSelectedAgentId(status.agentId);
+            }
+            setSelected({ type: "transferSkill", id: transferItemIdForSkill(status.skillId) });
           }}
         />
       ) : null}
@@ -1927,7 +1974,14 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
       const report = await bulkAdoptSkills(items);
       setAdoptedCount((prev) => prev + report.changed);
       if (report.errors.length) {
+        const nextUnmanaged = await listUnmanagedForOnboarding();
+        setUnmanaged(nextUnmanaged);
+        setSelectedAdoptIds(new Set(nextUnmanaged.map((status) => status.id)));
         setStepError(`部分 Skill 入库失败：${report.errors.slice(0, 3).join("；")}${report.errors.length > 3 ? "…" : ""}`);
+        if (report.changed > 0) {
+          setStepNotice(`已入库 ${report.changed} 个，剩余项需要处理后再继续。`);
+        }
+        return;
       } else {
         setStepNotice(`已入库 ${report.changed} 个 Skill`);
       }
@@ -2528,39 +2582,41 @@ function SkillList({
                 </span>
               ) : null}
             </span>
+          </button>
+          <div className="skill-row-trailing">
             <span className="row-meta">
               {skill.issueCount ? <span className="mini-warn">{skill.issueCount} 个问题</span> : null}
               <span>{skill.enabledCount} 处启用</span>
             </span>
-          </button>
-          <div className="skill-card-actions" aria-label={`${skill.displayName} 操作`}>
-            <button
-              type="button"
-              className="compact-action primary"
-              onClick={() => onDeploy(skill)}
-              title="使用"
-            >
-              <Link2 size={14} />
-              <span>使用</span>
-            </button>
-            <button
-              type="button"
-              className="compact-action"
-              onClick={() => onOpen(skill)}
-              title="打开本地路径"
-            >
-              <ExternalLink size={14} />
-              <span>打开</span>
-            </button>
-            <button
-              type="button"
-              className="compact-action danger"
-              onClick={() => onDelete(skill)}
-              title="删除"
-            >
-              <Trash2 size={14} />
-              <span>删除</span>
-            </button>
+            <div className="skill-card-actions" aria-label={`${skill.displayName} 操作`}>
+              <button
+                type="button"
+                className="compact-action primary"
+                onClick={() => onDeploy(skill)}
+                title="使用"
+              >
+                <Link2 size={14} />
+                <span>使用</span>
+              </button>
+              <button
+                type="button"
+                className="icon-button micro"
+                onClick={() => onOpen(skill)}
+                aria-label={`打开 ${skill.displayName} 本地路径`}
+                title="打开本地路径"
+              >
+                <ExternalLink size={14} />
+              </button>
+              <button
+                type="button"
+                className="icon-button micro danger"
+                onClick={() => onDelete(skill)}
+                aria-label={`删除 ${skill.displayName}`}
+                title="删除"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
           </div>
         </div>
       ))}
@@ -3019,10 +3075,33 @@ function PresetList({
   );
 }
 
-function ContextPanel({ title, children }: { title: string; children: React.ReactNode }) {
+function ContextPanel({
+  title,
+  children,
+  onClose,
+  closeLabel = "关闭详情",
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose?: () => void;
+  closeLabel?: string;
+}) {
   return (
     <section className="context-panel">
-      <h2>{title}</h2>
+      <header className="context-panel-header">
+        <h2>{title}</h2>
+        {onClose ? (
+          <button
+            type="button"
+            className="icon-button micro subtle"
+            onClick={onClose}
+            aria-label={closeLabel}
+            title={closeLabel}
+          >
+            <X size={15} />
+          </button>
+        ) : null}
+      </header>
       {children}
     </section>
   );
@@ -3263,6 +3342,114 @@ function AgentSettingRow({
           <Trash2 size={16} />
         </button>
       </div>
+    </div>
+  );
+}
+
+function IssueResolutionDrawer({
+  issue,
+  working,
+  onClose,
+  onIgnore,
+  onResolve,
+  onOpenStatus,
+}: {
+  issue: HealthIssue;
+  working: boolean;
+  onClose: () => void;
+  onIgnore: (statuses: TargetStatus[]) => void;
+  onResolve: (statuses: TargetStatus[]) => void;
+  onOpenStatus: (status: TargetStatus) => void;
+}) {
+  const drawerRef = useDialogFocus<HTMLElement>(onClose);
+  const statuses = issue.statuses;
+  const canResolve = issue.kind === "broken";
+  const title = issue.kind === "broken" ? "处理失效链接" : `处理${issue.label}`;
+  const description = issue.kind === "broken"
+    ? "这些链接指向的 Skill 已经不存在。可以忽略它们，也可以删除这些失效链接。"
+    : "可以先忽略这些问题，之后同一问题不会继续提醒。";
+
+  return (
+    <div className="drawer-backdrop">
+      <aside
+        ref={drawerRef}
+        className="drawer issue-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="issue-drawer-title"
+      >
+        <header>
+          <div>
+            <span>问题处理</span>
+            <h2 id="issue-drawer-title">{title}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭">
+            <X size={17} />
+          </button>
+        </header>
+
+        <p className="drawer-description">{description}</p>
+
+        <div className="issue-drawer-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={working || !statuses.length}
+            onClick={() => onIgnore(statuses)}
+          >
+            忽略全部
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={working || !canResolve || !statuses.length}
+            onClick={() => onResolve(statuses)}
+          >
+            <Trash2 size={16} />
+            处理全部
+          </button>
+        </div>
+
+        <div className="issue-list">
+          {statuses.map((status) => (
+            <div key={status.issueKey ?? status.id} className="issue-row">
+              <div className="issue-row-main">
+                <strong>{status.displayName || status.skillName}</strong>
+                <span>{status.projectName ? `${status.projectName} / ` : ""}{status.agentName}</span>
+                <small>{status.issue || status.description || issue.summary}</small>
+                <code>{status.targetPath}</code>
+                {status.linkTarget ? <code>{status.linkTarget}</code> : null}
+              </div>
+              <div className="issue-row-actions">
+                <button
+                  type="button"
+                  className="ghost-button compact"
+                  disabled={working}
+                  onClick={() => onOpenStatus(status)}
+                >
+                  查看
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button compact"
+                  disabled={working}
+                  onClick={() => onIgnore([status])}
+                >
+                  忽略
+                </button>
+                <button
+                  type="button"
+                  className="primary-button compact"
+                  disabled={working || status.status !== "broken"}
+                  onClick={() => onResolve([status])}
+                >
+                  处理
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </aside>
     </div>
   );
 }
@@ -4061,7 +4248,9 @@ function buildHealthIssues(state: AppState): HealthIssue[] {
       count,
       filter: group.filter,
       status: firstStatus,
+      statuses: group.statuses ?? [],
       skill: firstStatus ? undefined : firstSkill,
+      skills: group.skills ?? [],
       summary: `${group.label} ${count} 个${target ? `，先处理：${target}` : ""}`,
     });
   }
@@ -4082,6 +4271,10 @@ function buildStatusFilterOptions(statuses: TargetStatus[]) {
     label: statusFilterLabels[id],
     count: statuses.filter((status) => targetStatusMatchesFilter(status, id)).length,
   }));
+}
+
+function issueKeysForStatuses(statuses: TargetStatus[]) {
+  return [...new Set(statuses.map((status) => status.issueKey).filter((key): key is string => Boolean(key)))];
 }
 
 function buildTransferIssueFilterOptions(items: TransferItem[], activeFilter: StatusFilter) {

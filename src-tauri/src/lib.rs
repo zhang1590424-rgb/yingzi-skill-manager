@@ -34,7 +34,9 @@ pub fn run() {
             commands::set_agent_enabled,
             commands::set_onboarding_completed,
             commands::list_unmanaged_for_onboarding,
-            commands::bulk_adopt_skills
+            commands::bulk_adopt_skills,
+            commands::ignore_issue_keys,
+            commands::resolve_broken_issue_keys
         ])
         .run(tauri::generate_context!())
         .expect("failed to run skill hub");

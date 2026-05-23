@@ -219,6 +219,16 @@ export async function bulkAdoptSkills(items: BulkAdoptItem[]): Promise<BulkAdopt
   return invoke<BulkAdoptReport>("bulk_adopt_skills", { items });
 }
 
+export async function ignoreIssueKeys(issueKeys: string[]): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState(issueKeys.join(","));
+  return invoke<AppState>("ignore_issue_keys", { issueKeys });
+}
+
+export async function resolveBrokenIssueKeys(issueKeys: string[]): Promise<OperationReport> {
+  if (!isTauriRuntime()) return mockReport(issueKeys.length);
+  return invoke<OperationReport>("resolve_broken_issue_keys", { issueKeys });
+}
+
 function isTauriRuntime() {
   return "__TAURI_INTERNALS__" in window;
 }

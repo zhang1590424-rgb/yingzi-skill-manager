@@ -714,10 +714,7 @@ fn builtin_preset_skills_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
         return Ok(dev_dir);
     }
 
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .context("无法定位应用资源目录")?;
+    let resource_dir = app.path().resource_dir().context("无法定位应用资源目录")?;
     let bundled_dir = resource_dir.join(BUILTIN_PRESET_RESOURCE_DIR);
     if bundled_dir.is_dir() {
         return Ok(bundled_dir);
@@ -726,10 +723,7 @@ fn builtin_preset_skills_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     Err(anyhow!("预置 Skill 暂时不可用，可以先跳过。"))
 }
 
-fn scan_builtin_preset_skills_internal(
-    store: &Store,
-    root: &Path,
-) -> Result<SkillPackageScan> {
+fn scan_builtin_preset_skills_internal(store: &Store, root: &Path) -> Result<SkillPackageScan> {
     if !root.is_dir() {
         return Err(anyhow!("预置 Skill 暂时不可用，可以先跳过。"));
     }
@@ -1035,5 +1029,22 @@ pub fn bulk_adopt_skills(items: Vec<BulkAdoptItem>) -> Result<BulkAdoptReport, S
             changed,
             errors,
         })
+    })
+}
+
+#[tauri::command]
+pub fn ignore_issue_keys(issue_keys: Vec<String>) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.ignore_issue_keys(&issue_keys)?;
+        store.load_app_state()
+    })
+}
+
+#[tauri::command]
+pub fn resolve_broken_issue_keys(issue_keys: Vec<String>) -> Result<OperationReport, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.resolve_broken_issue_keys(&issue_keys)
     })
 }
