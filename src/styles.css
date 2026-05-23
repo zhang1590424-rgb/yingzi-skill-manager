@@ -9,13 +9,13 @@
   -webkit-font-smoothing: antialiased;
 
   --app-bg: #eef1f5;
-  --sidebar-bg: rgba(239, 243, 247, 0.74);
-  --sidebar-active: #ffffff;
+  --sidebar-bg: rgba(239, 243, 247, 0.6);
+  --sidebar-active: rgba(255, 255, 255, 0.9);
   --material: #f7f8fa;
   --material-strong: #ffffff;
-  --material-quiet: rgba(244, 247, 250, 0.68);
-  --material-quiet-strong: rgba(255, 255, 255, 0.78);
-  --material-quiet-border: rgba(185, 193, 204, 0.44);
+  --material-quiet: rgba(244, 247, 250, 0.56);
+  --material-quiet-strong: rgba(255, 255, 255, 0.72);
+  --material-quiet-border: rgba(164, 176, 192, 0.42);
   --material-border: rgba(201, 209, 220, 0.7);
   --scrim-bg: rgba(237, 241, 246, 0.62);
   --surface: #f8f9fb;
@@ -129,7 +129,9 @@ code {
   overflow: hidden;
   color: var(--text);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.44), transparent 42%),
+    linear-gradient(115deg, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0.22) 34%, transparent 68%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 42%),
+    linear-gradient(90deg, rgba(218, 225, 234, 0.44), transparent 24%, rgba(255, 255, 255, 0.34) 55%, transparent 82%),
     var(--app-bg);
 }
 
@@ -153,14 +155,21 @@ code {
 }
 
 .sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
   border-right: 1px solid var(--material-quiet-border);
-  background: var(--sidebar-bg);
-  backdrop-filter: blur(14px) saturate(1.05);
-  -webkit-backdrop-filter: blur(14px) saturate(1.05);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.18) 58%, rgba(232, 238, 245, 0.16)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(232, 237, 244, 0.18)),
+    var(--sidebar-bg);
+  box-shadow:
+    inset 1px 0 0 rgba(255, 255, 255, 0.62),
+    inset -1px 0 0 rgba(122, 139, 160, 0.12);
+  backdrop-filter: blur(22px) saturate(1.16);
+  -webkit-backdrop-filter: blur(22px) saturate(1.16);
   padding: 14px 10px;
 }
 
@@ -752,13 +761,16 @@ code {
   min-height: 100vh;
   overflow: hidden;
   background:
-    linear-gradient(180deg, rgba(248, 249, 251, 0.92), rgba(237, 241, 246, 0.86)),
+    linear-gradient(120deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.2) 38%, transparent 68%),
+    linear-gradient(180deg, rgba(248, 249, 251, 0.88), rgba(237, 241, 246, 0.76)),
+    linear-gradient(90deg, rgba(216, 224, 235, 0.36), transparent 28%, rgba(255, 255, 255, 0.3) 64%, transparent),
     var(--app-bg);
 }
 
 .onboarding-shell.welcome {
   background:
-    radial-gradient(circle at 78% 24%, rgba(226, 232, 240, 0.48), transparent 32%),
+    linear-gradient(116deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.18) 36%, transparent 66%),
+    linear-gradient(78deg, transparent 0%, rgba(213, 222, 234, 0.42) 48%, transparent 88%),
     linear-gradient(135deg, #fbfcfd 0%, #f1f4f7 55%, #e9edf2 100%);
 }
 
@@ -842,16 +854,18 @@ code {
 .shadow-plane {
   width: 390px;
   height: 182px;
-  border: 1px solid rgba(169, 180, 193, 0.3);
+  border: 1px solid rgba(153, 168, 188, 0.34);
   border-radius: 24px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.56), rgba(222, 228, 236, 0.32)),
-    rgba(242, 245, 248, 0.58);
+    linear-gradient(135deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.24) 42%, rgba(220, 228, 238, 0.28)),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.22), rgba(218, 226, 237, 0.18)),
+    rgba(242, 245, 248, 0.46);
   box-shadow:
-    0 30px 72px rgba(45, 56, 70, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+    0 30px 72px rgba(45, 56, 70, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    inset 0 -1px 0 rgba(124, 139, 158, 0.12);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
   transform: perspective(900px) rotateX(58deg) rotateZ(-20deg);
 }
 
@@ -901,9 +915,15 @@ code {
   flex-direction: column;
   gap: 44px;
   border-right: 1px solid var(--material-quiet-border);
-  background: var(--material-quiet);
-  backdrop-filter: blur(14px) saturate(1.04);
-  -webkit-backdrop-filter: blur(14px) saturate(1.04);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.16) 64%, rgba(226, 233, 242, 0.16)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(229, 236, 245, 0.16)),
+    var(--material-quiet);
+  box-shadow:
+    inset 1px 0 0 rgba(255, 255, 255, 0.62),
+    inset -1px 0 0 rgba(122, 139, 160, 0.12);
+  backdrop-filter: blur(22px) saturate(1.16);
+  -webkit-backdrop-filter: blur(22px) saturate(1.16);
   padding: 38px 24px;
 }
 
@@ -2727,6 +2747,98 @@ details[open] > summary .summary-open {
   min-height: 0;
   overflow: auto;
   padding: 16px 18px 24px;
+}
+
+.health-overview {
+  display: grid;
+  grid-template-columns: minmax(160px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 18px;
+}
+
+.health-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.health-copy strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 680;
+}
+
+.health-copy span {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.health-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.health-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  border: 1px solid var(--note-line);
+  border-radius: var(--radius);
+  background: var(--surface-strong);
+  color: var(--note);
+  padding: 6px 10px;
+  text-align: left;
+  transition:
+    background-color var(--ease),
+    border-color var(--ease),
+    color var(--ease);
+}
+
+.health-chip:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.health-chip span {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.health-chip strong {
+  min-width: 20px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text);
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.health-chip.conflict,
+.health-chip.invalid {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.health-chip.broken,
+.health-chip.pathMissing {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.health-chip.unmanaged {
+  border-color: var(--note-line);
+  background: var(--note-soft);
+  color: var(--note);
 }
 
 .settings-list section {

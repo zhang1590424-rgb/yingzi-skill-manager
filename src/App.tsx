@@ -861,6 +861,40 @@ export default function App() {
 
   function resolveIssueStatuses(statuses: TargetStatus[]) {
     const brokenStatuses = statuses.filter((status) => status.status === "broken");
+    const unmanagedStatuses = statuses.filter((status) => status.status === "unmanaged");
+    const conflictStatuses = statuses.filter((status) => status.status === "conflict");
+    if (unmanagedStatuses.length && unmanagedStatuses.length === statuses.length) {
+      setIssuePanel(null);
+      adoptStatuses(unmanagedStatuses);
+      return;
+    }
+    if (conflictStatuses.length && conflictStatuses.length === statuses.length) {
+      setConfirmDialog({
+        title: `处理 ${conflictStatuses.length} 个冲突`,
+        message: "将用技能列表里的主库版本覆盖目标同名内容，并重新建立软链接。",
+        details: conflictStatuses.slice(0, 5).map((status) => status.targetPath),
+        confirmLabel: "确认覆盖",
+        tone: "warn",
+        onConfirm: async () => {
+          const ok = await runAction(async () => {
+            let combined = OperationReportEmpty();
+            for (const status of conflictStatuses) {
+              const report = await deploySkill(
+                status.skillId,
+                [{ agentId: status.agentId, projectId: status.projectId ?? null }],
+                true,
+              );
+              combined = mergeReport(combined, report);
+            }
+            const handled = await refreshAfterReport(combined, "已处理冲突", "overlay");
+            if (handled) setIssuePanel(null);
+            return handled;
+          }, undefined, "overlay");
+          return ok;
+        },
+      });
+      return;
+    }
     const issueKeys = issueKeysForStatuses(brokenStatuses);
     if (!issueKeys.length) return;
     setConfirmDialog({
@@ -1162,6 +1196,8 @@ export default function App() {
             },
           });
         }}
+        healthIssues={healthIssues}
+        onSelectHealthIssue={selectHealthIssue}
       />
     );
   }
@@ -1691,6 +1727,7 @@ export default function App() {
             if (status.targetKind === "project") {
               setView("projects");
               setSelectedProjectId(status.projectId ?? null);
+              setSelectedProjectAgentId(status.agentId);
             } else {
               setView("global");
               setSelectedAgentId(status.agentId);
@@ -3167,6 +3204,7 @@ function ProjectSelector({
 
 function SettingsPanel({
   state,
+  healthIssues,
   onPickAgent,
   onPickProject,
   onUpdateAgentPath,
@@ -3174,8 +3212,10 @@ function SettingsPanel({
   onToggleAgentEnabled,
   onRemoveAgent,
   onRemoveProject,
+  onSelectHealthIssue,
 }: {
   state: AppState;
+  healthIssues: HealthIssue[];
   onPickAgent: () => void;
   onPickProject: () => void;
   onUpdateAgentPath: (agentId: string) => void;
@@ -3183,9 +3223,12 @@ function SettingsPanel({
   onToggleAgentEnabled: (agentId: string, enabled: boolean) => void | Promise<void>;
   onRemoveAgent: (agentId: string) => void;
   onRemoveProject: (projectId: string) => void;
+  onSelectHealthIssue: (issue: HealthIssue) => void;
 }) {
   return (
     <div className="settings-list">
+      <HealthOverview issues={healthIssues} onSelect={onSelectHealthIssue} />
+
       <section>
         <h2>本地配置</h2>
         <div className="settings-key-grid">
@@ -3211,7 +3254,6 @@ function SettingsPanel({
             <RefreshCw size={16} />
           </button>
         </div>
-        <ProblemBox issues={state.issues} />
       </section>
 
       <section>
@@ -3363,11 +3405,21 @@ function IssueResolutionDrawer({
 }) {
   const drawerRef = useDialogFocus<HTMLElement>(onClose);
   const statuses = issue.statuses;
-  const canResolve = issue.kind === "broken";
+  const canResolve = issue.kind === "broken" || issue.kind === "unmanaged" || issue.kind === "conflict";
   const title = issue.kind === "broken" ? "处理失效链接" : `处理${issue.label}`;
-  const description = issue.kind === "broken"
-    ? "这些链接指向的 Skill 已经不存在。可以忽略它们，也可以删除这些失效链接。"
-    : "可以先忽略这些问题，之后同一问题不会继续提醒。";
+  const resolveLabel: Record<HealthIssueKind, string> = {
+    broken: "处理全部",
+    unmanaged: "导入全部",
+    conflict: "覆盖全部",
+    pathMissing: "处理全部",
+    invalid: "处理全部",
+  };
+  const description = (() => {
+    if (issue.kind === "broken") return "这些链接指向的 Skill 已经不存在。可以忽略它们，也可以删除这些失效链接。";
+    if (issue.kind === "unmanaged") return "这些目标位置已有 Skill，但尚未进入主库。可以导入主库，或忽略本次提醒。";
+    if (issue.kind === "conflict") return "这些目标位置有同名内容。可以用主库版本覆盖目标，或先查看具体位置。";
+    return "这个问题暂时需要人工确认。可以先查看位置，或忽略同一问题的后续提醒。";
+  })();
 
   return (
     <div className="drawer-backdrop">
@@ -3405,8 +3457,8 @@ function IssueResolutionDrawer({
             disabled={working || !canResolve || !statuses.length}
             onClick={() => onResolve(statuses)}
           >
-            <Trash2 size={16} />
-            处理全部
+            {issue.kind === "unmanaged" ? <Archive size={16} /> : issue.kind === "conflict" ? <RefreshCw size={16} /> : <Trash2 size={16} />}
+            {resolveLabel[issue.kind]}
           </button>
         </div>
 
@@ -3440,10 +3492,10 @@ function IssueResolutionDrawer({
                 <button
                   type="button"
                   className="primary-button compact"
-                  disabled={working || status.status !== "broken"}
+                  disabled={working || !canResolve}
                   onClick={() => onResolve([status])}
                 >
-                  处理
+                  {status.status === "unmanaged" ? "导入" : status.status === "conflict" ? "覆盖" : "处理"}
                 </button>
               </div>
             </div>
