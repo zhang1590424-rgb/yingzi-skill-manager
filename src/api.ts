@@ -8,6 +8,7 @@ import type {
   OnboardingStatus,
   OperationReport,
   PackageImportReport,
+  ProjectSuggestion,
   SkillPackageScan,
   TargetStatus,
 } from "./types";
@@ -94,6 +95,23 @@ export async function adoptSkillFromTarget(
 export async function addProject(path: string): Promise<AppState> {
   if (!isTauriRuntime()) return mockState(path);
   return invoke<AppState>("add_project", { path });
+}
+
+export async function suggestOnboardingProjects(): Promise<ProjectSuggestion[]> {
+  if (!isTauriRuntime()) {
+    return [
+      {
+        id: "mock-shadow-project",
+        name: "skill管理器",
+        path: "/Users/bytedance/项目/skill管理器",
+        reason: "发现 Agent 协作规则，像项目根目录",
+        score: 40,
+        recommended: false,
+        alreadyAdded: false,
+      },
+    ];
+  }
+  return invoke<ProjectSuggestion[]>("suggest_onboarding_projects");
 }
 
 export async function addAgent(globalPath: string): Promise<AppState> {
@@ -243,7 +261,7 @@ function mockReport(changed = 1): OperationReport {
 }
 
 function mockPackageSkills() {
-  return [
+  const skills = [
     { id: "brainstorming", name: "brainstorming", displayName: "Brainstorming", description: "开发或创作前先澄清需求和设计", category: "产品创意", entryPrefix: "mock/skills/brainstorming" },
     { id: "office-hours", name: "office-hours", displayName: "Office Hours", description: "前置澄清产品想法、用户和切入点", category: "产品创意", entryPrefix: "mock/skills/office-hours" },
     { id: "plan-ceo-review", name: "plan-ceo-review", displayName: "Plan CEO Review", description: "用 CEO / Founder 视角评审方案", category: "产品创意", entryPrefix: "mock/skills/plan-ceo-review" },
@@ -258,6 +276,19 @@ function mockPackageSkills() {
     { id: "agent-browser", name: "agent-browser", displayName: "agent-browser", description: "浏览器自动化和 Web 测试", category: "其他工具", entryPrefix: "mock/skills/agent-browser" },
     { id: "find-skills", name: "find-skills", displayName: "Find Skills", description: "查找可安装的 Skill", category: "其他工具", entryPrefix: "mock/skills/find-skills" },
     { id: "skill-creator", name: "skill-creator", displayName: "Skill Creator", description: "创建、修改和优化 Skill", category: "其他工具", entryPrefix: "mock/skills/skill-creator" },
+  ];
+  return [
+    ...skills.map((skill) => ({ ...skill, itemKind: "skill" as const, memberCount: 1 })),
+    {
+      id: "feishu-skill-group",
+      name: "feishu-skill-group",
+      displayName: "飞书技能组",
+      description: "安装官方飞书 CLI 的 Agent Skills，并创建一个可批量应用的技能组合。",
+      category: "其他工具",
+      entryPrefix: "bundle:feishu-skill-group",
+      itemKind: "bundle" as const,
+      memberCount: 26,
+    },
   ];
 }
 

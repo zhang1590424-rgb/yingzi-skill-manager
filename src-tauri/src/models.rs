@@ -22,6 +22,18 @@ pub struct Project {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProjectSuggestion {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub reason: String,
+    pub score: usize,
+    pub recommended: bool,
+    pub already_added: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Skill {
     pub id: String,
     pub name: String,
@@ -208,6 +220,8 @@ pub struct PackageSkill {
     pub category: String,
     pub entry_prefix: String,
     pub exists: bool,
+    pub item_kind: String,
+    pub member_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

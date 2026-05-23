@@ -1,6 +1,6 @@
 use crate::models::{
     Agent, AgentWorkspace, AppState, DetectedAgent, OnboardingStatus, Preset, Project,
-    ProjectAgentWorkspace, Skill, SkillStatus, TargetKind, TargetStatus,
+    ProjectAgentWorkspace, ProjectSuggestion, Skill, SkillStatus, TargetKind, TargetStatus,
 };
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
@@ -26,6 +26,10 @@ struct InferredAgentConfig {
 }
 
 const DEFAULT_AGENT_MIGRATION_KEY: &str = "default_agents_trae_cn_aiden_migrated";
+const ONBOARDING_PROJECT_SCAN_LIMIT: usize = 200;
+const ONBOARDING_PROJECT_RETURN_LIMIT: usize = 8;
+const ONBOARDING_PROJECT_SCORE_THRESHOLD: usize = 24;
+const ONBOARDING_PROJECT_RECOMMENDED_SCORE: usize = 50;
 
 impl Store {
     pub fn new() -> Result<Self> {
@@ -289,6 +293,76 @@ impl Store {
 
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .context("无法读取项目列表")
+    }
+
+    pub fn suggest_onboarding_projects(&self) -> Result<Vec<ProjectSuggestion>> {
+        let existing_paths: HashSet<String> = self
+            .load_projects()?
+            .into_iter()
+            .filter_map(|project| normalize_existing_path(Path::new(&project.path)))
+            .collect();
+        let mut suggestions: HashMap<String, ProjectSuggestion> = HashMap::new();
+
+        for root in onboarding_document_roots() {
+            if !root.is_dir() {
+                continue;
+            }
+            for path in collect_onboarding_candidate_dirs(&root) {
+                let Ok(canonical) = path.canonicalize() else {
+                    continue;
+                };
+                if !canonical.is_dir() {
+                    continue;
+                }
+                let Some(score) = score_onboarding_project_dir(&canonical) else {
+                    continue;
+                };
+                if score.score < ONBOARDING_PROJECT_SCORE_THRESHOLD {
+                    continue;
+                }
+
+                let normalized = canonical.to_string_lossy().to_string();
+                let name = canonical
+                    .file_name()
+                    .map(|value| value.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "未命名项目".to_string());
+                let already_added = existing_paths.contains(&normalized);
+                let reason = if already_added {
+                    format!("已添加 · {}", score.reasons.join("，"))
+                } else {
+                    score.reasons.join("，")
+                };
+                let suggestion = ProjectSuggestion {
+                    id: stable_id(&normalized),
+                    name,
+                    path: normalized.clone(),
+                    reason,
+                    score: score.score,
+                    recommended: score.score >= ONBOARDING_PROJECT_RECOMMENDED_SCORE,
+                    already_added,
+                };
+
+                suggestions
+                    .entry(normalized)
+                    .and_modify(|current| {
+                        if suggestion.score > current.score {
+                            *current = suggestion.clone();
+                        }
+                    })
+                    .or_insert(suggestion);
+            }
+        }
+
+        let mut result = suggestions.into_values().collect::<Vec<_>>();
+        result.sort_by(|a, b| {
+            b.recommended
+                .cmp(&a.recommended)
+                .then(b.score.cmp(&a.score))
+                .then(a.already_added.cmp(&b.already_added))
+                .then(a.name.cmp(&b.name))
+        });
+        result.truncate(ONBOARDING_PROJECT_RETURN_LIMIT);
+        Ok(result)
     }
 
     pub fn load_presets(&self) -> Result<Vec<Preset>> {
@@ -897,6 +971,7 @@ impl Store {
 
     pub fn list_unmanaged_in_enabled_agents(&self) -> Result<Vec<TargetStatus>> {
         let agents = self.load_agents()?;
+        let projects = self.load_projects()?;
         let skills = self.scan_library_skills()?;
         let mut result = Vec::new();
         for agent in &agents {
@@ -904,19 +979,239 @@ impl Store {
                 continue;
             }
             let root = PathBuf::from(&agent.global_path);
-            if !root.exists() {
-                continue;
+            if root.exists() {
+                let statuses =
+                    self.scan_target_root(&skills, &root, TargetKind::Global, agent, None)?;
+                for status in statuses {
+                    if is_importable_unmanaged_status(&status) {
+                        result.push(status);
+                    }
+                }
             }
-            let statuses =
-                self.scan_target_root(&skills, &root, TargetKind::Global, agent, None)?;
-            for status in statuses {
-                if status.status == SkillStatus::Unmanaged {
-                    result.push(status);
+
+            for project in &projects {
+                if !Path::new(&project.path).exists() {
+                    continue;
+                }
+                let root = PathBuf::from(&project.path).join(&agent.project_relative_path);
+                if !root.exists() {
+                    continue;
+                }
+                let statuses = self.scan_target_root(
+                    &skills,
+                    &root,
+                    TargetKind::Project,
+                    agent,
+                    Some(project),
+                )?;
+                for status in statuses {
+                    if is_importable_unmanaged_status(&status) {
+                        result.push(status);
+                    }
                 }
             }
         }
         Ok(result)
     }
+}
+
+struct OnboardingProjectScore {
+    score: usize,
+    reasons: Vec<String>,
+}
+
+fn onboarding_document_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(document_dir) = dirs::document_dir() {
+        push_unique_path(&mut roots, document_dir);
+    }
+    if let Some(home) = dirs::home_dir() {
+        push_unique_path(&mut roots, home.join("Documents"));
+        push_unique_path(&mut roots, home.join("文稿"));
+    }
+    roots
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn collect_onboarding_candidate_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    for path in read_limited_child_dirs(root) {
+        if should_ignore_project_scan_dir(&path) {
+            continue;
+        }
+        if is_project_grouping_dir(&path) {
+            for child in read_limited_child_dirs(&path) {
+                if !should_ignore_project_scan_dir(&child) {
+                    result.push(child);
+                }
+            }
+        }
+        result.push(path);
+    }
+    result
+}
+
+fn read_limited_child_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for entry in entries.take(ONBOARDING_PROJECT_SCAN_LIMIT).flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            result.push(entry.path());
+        }
+    }
+    result
+}
+
+fn should_ignore_project_scan_dir(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    name.starts_with('.')
+        || matches!(
+            lower.as_str(),
+            "node_modules"
+                | "target"
+                | "dist"
+                | "build"
+                | "out"
+                | "library"
+                | "applications"
+                | "movies"
+                | "music"
+                | "pictures"
+                | "downloads"
+        )
+}
+
+fn is_project_grouping_dir(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "project"
+            | "projects"
+            | "workspace"
+            | "workspaces"
+            | "code"
+            | "codes"
+            | "repo"
+            | "repos"
+            | "repositories"
+            | "dev"
+            | "developer"
+            | "work"
+    ) || matches!(name.as_str(), "项目" | "代码" | "开发" | "工作区")
+}
+
+fn score_onboarding_project_dir(path: &Path) -> Option<OnboardingProjectScore> {
+    let mut score = 0usize;
+    let mut reasons = Vec::new();
+    let skill_roots = [
+        ".codex/skills",
+        ".claude/skills",
+        ".trae-cn/skills",
+        ".aiden/skills",
+    ];
+    let agent_roots = [".codex", ".claude", ".trae-cn", ".aiden"];
+    let rule_files = ["AGENTS.md", "CLAUDE.md"];
+    let project_markers = [
+        ".git",
+        "package.json",
+        "Cargo.toml",
+        "pyproject.toml",
+        "go.mod",
+        "pnpm-workspace.yaml",
+        "yarn.lock",
+    ];
+
+    let skill_root_count = skill_roots
+        .iter()
+        .filter(|relative| path.join(relative).is_dir())
+        .count();
+    if skill_root_count > 0 {
+        score += 70;
+        reasons.push(format!("发现 {} 个项目级 Skill 目录", skill_root_count));
+    }
+
+    let agent_root_count = agent_roots
+        .iter()
+        .filter(|relative| path.join(relative).exists())
+        .count();
+    if agent_root_count > 0 {
+        score += 25;
+        reasons.push("发现 Agent 工作痕迹".to_string());
+    }
+
+    let rule_file_count = rule_files
+        .iter()
+        .filter(|relative| path.join(relative).is_file())
+        .count();
+    if rule_file_count > 0 {
+        score += 24;
+        reasons.push("发现 Agent 协作规则".to_string());
+    }
+
+    let project_marker_count = project_markers
+        .iter()
+        .filter(|relative| path.join(relative).exists())
+        .count();
+    if project_marker_count > 0 {
+        score += 16;
+        reasons.push("像项目根目录".to_string());
+    }
+
+    if has_project_name_hint(path) {
+        score += 4;
+    }
+
+    (!reasons.is_empty()).then_some(OnboardingProjectScore { score, reasons })
+}
+
+fn has_project_name_hint(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    lower.contains("project")
+        || lower.contains("workspace")
+        || lower.contains("repo")
+        || name.contains("项目")
+        || name.contains("产品")
+}
+
+fn normalize_existing_path(path: &Path) -> Option<String> {
+    path.canonicalize()
+        .ok()
+        .map(|value| value.to_string_lossy().to_string())
+}
+
+fn is_importable_unmanaged_status(status: &TargetStatus) -> bool {
+    if status.status != SkillStatus::Unmanaged {
+        return false;
+    }
+    let target_path = Path::new(&status.target_path);
+    target_path.join("SKILL.md").exists()
+        || status
+            .link_target
+            .as_deref()
+            .map(|path| Path::new(path).join("SKILL.md").exists())
+            .unwrap_or(false)
 }
 
 fn default_agent_definitions() -> Result<Vec<DetectedAgent>> {
@@ -1426,6 +1721,92 @@ fn load_preset_skills(conn: &Connection, preset_id: &str) -> rusqlite::Result<Ve
         conn.prepare("SELECT skill_id FROM preset_skills WHERE preset_id = ?1 ORDER BY skill_id")?;
     let rows = stmt.query_map(params![preset_id], |row| row.get(0))?;
     rows.collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "skill-hub-onboarding-{}-{}",
+            name,
+            std::process::id()
+        ));
+        if root.exists() {
+            let _ = fs::remove_dir_all(&root);
+        }
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn project_candidate_scan_returns_empty_for_empty_root() {
+        let root = temp_root("empty");
+        let candidates = collect_onboarding_candidate_dirs(&root);
+        let _ = fs::remove_dir_all(&root);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn project_candidate_scan_tolerates_unreadable_root() {
+        let root = temp_root("unreadable");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let candidates = read_limited_child_dirs(&root);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn project_candidate_scan_scores_agent_workspace() {
+        let root = temp_root("candidate");
+        let project = root.join("Projects").join("ShadowProduct");
+        fs::create_dir_all(project.join(".codex").join("skills")).unwrap();
+        fs::write(project.join("AGENTS.md"), "# Rules").unwrap();
+        fs::write(project.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+
+        let candidates = collect_onboarding_candidate_dirs(&root);
+        let score = score_onboarding_project_dir(&project).unwrap();
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(candidates.iter().any(|candidate| candidate == &project));
+        assert!(score.score >= ONBOARDING_PROJECT_RECOMMENDED_SCORE);
+    }
+
+    #[test]
+    fn onboarding_unmanaged_candidate_requires_skill_md() {
+        let root = temp_root("unmanaged");
+        let target = root.join("readme-only");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("README.md"), "# Not enough").unwrap();
+        let mut status = TargetStatus {
+            id: "id".to_string(),
+            skill_id: "readme-only".to_string(),
+            skill_name: "readme-only".to_string(),
+            display_name: "readme-only".to_string(),
+            description: String::new(),
+            target_kind: TargetKind::Global,
+            agent_id: "codex".to_string(),
+            agent_name: "Codex".to_string(),
+            project_id: None,
+            project_name: None,
+            status: SkillStatus::Unmanaged,
+            target_path: target.to_string_lossy().to_string(),
+            link_target: None,
+            issue: None,
+            issue_key: None,
+            ignored: false,
+            root_exists: true,
+        };
+
+        assert!(!is_importable_unmanaged_status(&status));
+        fs::write(target.join("SKILL.md"), "---\nname: readme-only\n---\n").unwrap();
+        status.target_path = target.to_string_lossy().to_string();
+        assert!(is_importable_unmanaged_status(&status));
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 fn stable_id(value: &str) -> String {

@@ -20,6 +20,7 @@ pub fn run() {
             commands::withdraw_skill,
             commands::adopt_skill_from_target,
             commands::add_project,
+            commands::suggest_onboarding_projects,
             commands::add_agent,
             commands::remove_project,
             commands::remove_agent,

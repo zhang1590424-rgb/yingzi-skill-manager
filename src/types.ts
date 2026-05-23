@@ -25,6 +25,16 @@ export interface Project {
   exists: boolean;
 }
 
+export interface ProjectSuggestion {
+  id: string;
+  name: string;
+  path: string;
+  reason: string;
+  score: number;
+  recommended: boolean;
+  alreadyAdded: boolean;
+}
+
 export interface Skill {
   id: string;
   name: string;
@@ -143,6 +153,8 @@ export interface PackageSkill {
   category: string;
   entryPrefix: string;
   exists: boolean;
+  itemKind: "skill" | "bundle";
+  memberCount: number;
 }
 
 export interface SkillPackageScan {

@@ -25,7 +25,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -50,6 +50,7 @@ import {
   scanBuiltinPresetSkills,
   setAgentEnabled,
   setOnboardingCompleted,
+  suggestOnboardingProjects,
   resolveBrokenIssueKeys,
   updateAgentPath,
   upsertPreset,
@@ -65,6 +66,7 @@ import type {
   PackageSkill,
   Preset,
   Project,
+  ProjectSuggestion,
   SkillPackageScan,
   Skill,
   SkillStatus,
@@ -1916,6 +1918,11 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
   const [stepError, setStepError] = useState<string | null>(null);
   const [stepNotice, setStepNotice] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectSuggestions, setProjectSuggestions] = useState<ProjectSuggestion[]>([]);
+  const [selectedProjectSuggestionIds, setSelectedProjectSuggestionIds] = useState<Set<string>>(new Set());
+  const [projectSuggestionLoading, setProjectSuggestionLoading] = useState(false);
+  const [projectSuggestionScanStarted, setProjectSuggestionScanStarted] = useState(false);
+  const [projectSuggestionScanFailed, setProjectSuggestionScanFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [presetScan, setPresetScan] = useState<SkillPackageScan | null>(null);
   const [presetLoading, setPresetLoading] = useState(false);
@@ -1954,6 +1961,12 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     setStepError(null);
     setStepNotice(null);
   }
+
+  useEffect(() => {
+    if (step !== 2 || projectSuggestionScanStarted) return;
+    setProjectSuggestionScanStarted(true);
+    void loadProjectSuggestions();
+  }, [projectSuggestionScanStarted, step]);
 
   async function commitAgentSelection() {
     setBusy(true);
@@ -1995,6 +2008,77 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     } finally {
       setUnmanagedLoading(false);
     }
+  }
+
+  async function loadProjectSuggestions() {
+    setProjectSuggestionLoading(true);
+    setProjectSuggestionScanFailed(false);
+    try {
+      const suggestions = await suggestOnboardingProjects();
+      setProjectSuggestions(suggestions);
+      setSelectedProjectSuggestionIds(new Set(
+        suggestions
+          .filter((suggestion) => suggestion.recommended && !suggestion.alreadyAdded)
+          .map((suggestion) => suggestion.id),
+      ));
+    } catch (cause) {
+      setProjectSuggestions([]);
+      setSelectedProjectSuggestionIds(new Set());
+      setProjectSuggestionScanFailed(true);
+      setStepError(`暂时无法推荐项目，可以手动添加或继续：${cleanErrorMessage(cause)}`);
+    } finally {
+      setProjectSuggestionLoading(false);
+    }
+  }
+
+  function toggleProjectSuggestion(id: string) {
+    setSelectedProjectSuggestionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function addSelectedProjectSuggestions() {
+    const selectedSuggestions = projectSuggestions.filter(
+      (suggestion) => selectedProjectSuggestionIds.has(suggestion.id) && !suggestion.alreadyAdded,
+    );
+    if (!selectedSuggestions.length) {
+      return true;
+    }
+
+    setBusy(true);
+    setStepError(null);
+    setStepNotice(null);
+    try {
+      let nextProjects = projects;
+      for (const suggestion of selectedSuggestions) {
+        const next = await addProject(suggestion.path);
+        nextProjects = next.projects;
+      }
+      setProjects(nextProjects);
+      setProjectSuggestions((current) =>
+        current.map((suggestion) =>
+          selectedProjectSuggestionIds.has(suggestion.id)
+            ? { ...suggestion, alreadyAdded: true, reason: suggestion.reason.startsWith("已添加") ? suggestion.reason : `已添加 · ${suggestion.reason}` }
+            : suggestion
+        )
+      );
+      setSelectedProjectSuggestionIds(new Set());
+      setStepNotice(`已添加 ${selectedSuggestions.length} 个项目`);
+      return true;
+    } catch (cause) {
+      setStepError(`添加推荐项目失败：${cleanErrorMessage(cause)}`);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function continueFromProjectStep() {
+    if (!(await addSelectedProjectSuggestions())) return;
+    await goToExistingSkillStep();
   }
 
   function toggleAdopt(id: string) {
@@ -2271,6 +2355,47 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
 
         {step === 2 ? (
           <section className="onboarding-step">
+            {projectSuggestionLoading ? (
+              <div className="loading-state">
+                <Loader2 className="spin" size={18} />
+                正在查找常用项目
+              </div>
+            ) : projectSuggestions.length ? (
+              <div className="onboarding-list">
+                {projectSuggestions.map((suggestion) => {
+                  const checked = selectedProjectSuggestionIds.has(suggestion.id);
+                  return (
+                    <label
+                      key={suggestion.id}
+                      className={[
+                        "onboarding-row",
+                        "project-suggestion-row",
+                        checked ? "selected" : "",
+                        suggestion.alreadyAdded ? "disabled" : "",
+                      ].filter(Boolean).join(" ")}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked || suggestion.alreadyAdded}
+                        disabled={suggestion.alreadyAdded}
+                        onChange={() => toggleProjectSuggestion(suggestion.id)}
+                      />
+                      <div className="onboarding-row-main">
+                        <strong>{suggestion.name}</strong>
+                        <small>{suggestion.recommended ? "推荐" : "可选"} · {suggestion.reason}</small>
+                        <code>{suggestion.path}</code>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="onboarding-empty">
+                {projectSuggestionScanFailed
+                  ? "暂时没有拿到项目推荐。可以手动添加，也可以继续。"
+                  : "没有发现明显的 Agent 工作目录。可以手动添加，也可以稍后在设置里添加。"}
+              </div>
+            )}
             {projects.length ? (
               <div className="onboarding-list">
                 {projects.map((project) => (
@@ -2283,9 +2408,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                   </div>
                 ))}
               </div>
-            ) : (
-              <div className="onboarding-empty">还没有添加项目。可以先跳过，之后在设置里添加。</div>
-            )}
+            ) : null}
             <div className="onboarding-actions">
               <button
                 type="button"
@@ -2319,7 +2442,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                 <button
                   type="button"
                   className="primary-button"
-                  onClick={() => void goToExistingSkillStep()}
+                  onClick={() => void continueFromProjectStep()}
                   disabled={busy}
                 >
                   继续
@@ -2384,11 +2507,11 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                 <button
                   type="button"
                   className="primary-button"
-                  onClick={() => void adoptSelected()}
-                  disabled={adopting || unmanagedLoading || selectedAdoptIds.size === 0}
+                  onClick={() => selectedAdoptIds.size > 0 ? void adoptSelected() : skipExistingSkillStep()}
+                  disabled={adopting || unmanagedLoading}
                 >
-                  {adopting ? <Loader2 className="spin" size={16} /> : <Archive size={16} />}
-                  导入已选（{selectedAdoptIds.size}）
+                  {adopting ? <Loader2 className="spin" size={16} /> : selectedAdoptIds.size > 0 ? <Archive size={16} /> : <ArrowRight size={16} />}
+                  {selectedAdoptIds.size > 0 ? `导入已选（${selectedAdoptIds.size}）` : "下一步"}
                 </button>
               </div>
             </footer>
@@ -2469,7 +2592,7 @@ function PackageSkillPicker({
   return (
     <div className="package-picker">
       <div className="package-picker-head">
-        <strong>找到 {scan.skills.length} 个预置 Skill</strong>
+        <strong>找到 {scan.skills.length} 个预置项</strong>
         <span>{selectableCount} 个可安装</span>
       </div>
       <div className="package-category-list">
@@ -2505,7 +2628,13 @@ function PackageSkillPicker({
                       <div className="package-skill-main">
                         <div>
                           <strong>{skill.displayName || skill.name}</strong>
-                          <span>{skill.exists ? "已安装" : "可安装"}</span>
+                          <span>
+                            {skill.exists
+                              ? "已安装"
+                              : skill.itemKind === "bundle"
+                                ? `${skill.memberCount} 个成员`
+                                : "可安装"}
+                          </span>
                         </div>
                         <p>{skill.description || "暂无说明"}</p>
                       </div>
@@ -4274,6 +4403,42 @@ function InlineWarning({ text }: { text: string }) {
     <div className="inline-warning">
       <AlertTriangle size={16} />
       {text}
+    </div>
+  );
+}
+
+function EmptyGuidance({
+  illustration,
+  title,
+  description,
+  action,
+  actionIcon,
+  onAction,
+}: {
+  illustration: string;
+  title: string;
+  description: string;
+  action: string;
+  actionIcon?: ReactNode;
+  onAction: () => void;
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+
+  return (
+    <div className="empty-guidance">
+      {!imageFailed ? (
+        <img src={illustration} alt="" onError={() => setImageFailed(true)} />
+      ) : (
+        <div className="empty-guidance-mark" aria-hidden="true" />
+      )}
+      <div>
+        <strong>{title}</strong>
+        <p>{description}</p>
+        <button type="button" className="primary-button" onClick={onAction}>
+          {actionIcon}
+          {action}
+        </button>
+      </div>
     </div>
   );
 }

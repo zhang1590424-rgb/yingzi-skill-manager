@@ -1,6 +1,7 @@
 use crate::models::{
     AppState, BulkAdoptItem, BulkAdoptReport, DeployTarget, DetectedAgent, OnboardingStatus,
-    OperationReport, PackageImportReport, PackageSkill, SkillPackageScan, TargetStatus,
+    OperationReport, PackageImportReport, PackageSkill, ProjectSuggestion, SkillPackageScan,
+    TargetStatus,
 };
 use crate::storage::{
     copy_dir_all, create_dir_symlink, is_link_to, remove_path, resolve_symlink_target, slugify,
@@ -15,6 +16,11 @@ use std::process::Command;
 use tauri::Manager;
 
 const BUILTIN_PRESET_RESOURCE_DIR: &str = "preset-skills";
+const FEISHU_BUNDLE_ID: &str = "feishu-skill-group";
+const FEISHU_BUNDLE_PRESET_ID: &str = "feishu-skill-group";
+const FEISHU_BUNDLE_NAME: &str = "飞书技能组";
+const FEISHU_BUNDLE_DESCRIPTION: &str =
+    "官方飞书 CLI 技能组合，用于通过 lark-cli 操作文档、消息、表格、日历等飞书能力。";
 
 #[tauri::command]
 pub fn get_app_state() -> Result<AppState, String> {
@@ -140,7 +146,7 @@ pub fn install_builtin_preset_skills(
         let mut errors = Vec::new();
 
         for skill in scan.skills {
-            if !requested.contains(&skill.id) {
+            if !requested.contains(&skill.id) || skill.item_kind != "skill" {
                 continue;
             }
             let source = root.join(&skill.name);
@@ -158,6 +164,16 @@ pub fn install_builtin_preset_skills(
                     errors.push(format!("{}：{:#}", skill.display_name, error));
                 }
             }
+        }
+
+        if requested.contains(FEISHU_BUNDLE_ID) {
+            install_feishu_builtin_skill_bundle(
+                &store,
+                &root,
+                &mut changed,
+                &mut skipped,
+                &mut errors,
+            )?;
         }
 
         Ok(PackageImportReport {
@@ -460,6 +476,11 @@ pub fn add_project(path: String) -> Result<AppState, String> {
 }
 
 #[tauri::command]
+pub fn suggest_onboarding_projects() -> Result<Vec<ProjectSuggestion>, String> {
+    run(|| Store::new()?.suggest_onboarding_projects())
+}
+
+#[tauri::command]
 pub fn add_agent(global_path: String) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
@@ -689,6 +710,8 @@ fn scan_skill_package_internal(store: &Store, package_path: &str) -> Result<Skil
             category: package_skill_category(&name).to_string(),
             entry_prefix: format!("{}/{}/{}", parts[0], parts[1], parts[2]),
             exists: existing_ids.contains(&id),
+            item_kind: "skill".to_string(),
+            member_count: 1,
         });
     }
 
@@ -733,6 +756,7 @@ fn scan_builtin_preset_skills_internal(store: &Store, root: &Path) -> Result<Ski
         .into_iter()
         .map(|skill| skill.id)
         .collect();
+    let presets = store.load_presets()?;
     let mut skills = Vec::new();
 
     for entry in fs::read_dir(root).context("无法读取预置 Skill")? {
@@ -742,6 +766,9 @@ fn scan_builtin_preset_skills_internal(store: &Store, root: &Path) -> Result<Ski
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
+        if is_feishu_builtin_skill_name(&name) {
+            continue;
+        }
         let id = slugify(&name);
         let content = fs::read_to_string(path.join("SKILL.md"))
             .with_context(|| format!("无法读取预置 Skill：{}", name))?;
@@ -754,6 +781,37 @@ fn scan_builtin_preset_skills_internal(store: &Store, root: &Path) -> Result<Ski
             category: package_skill_category(&name).to_string(),
             entry_prefix: name,
             exists: existing_ids.contains(&id),
+            item_kind: "skill".to_string(),
+            member_count: 1,
+        });
+    }
+
+    let feishu_skill_names = list_feishu_builtin_skill_names(root)?;
+    if !feishu_skill_names.is_empty() {
+        let feishu_skill_ids = feishu_skill_names
+            .iter()
+            .map(|name| slugify(name))
+            .collect::<Vec<_>>();
+        let feishu_preset_exists = presets
+            .iter()
+            .find(|preset| preset.id == FEISHU_BUNDLE_PRESET_ID)
+            .is_some_and(|preset| {
+                feishu_skill_ids
+                    .iter()
+                    .all(|id| preset.skill_ids.contains(id))
+            });
+        let feishu_skills_exist = feishu_skill_ids.iter().all(|id| existing_ids.contains(id));
+        skills.push(PackageSkill {
+            id: FEISHU_BUNDLE_ID.to_string(),
+            name: FEISHU_BUNDLE_ID.to_string(),
+            display_name: FEISHU_BUNDLE_NAME.to_string(),
+            description: "安装官方飞书 CLI 的 Agent Skills，并创建一个可批量应用的技能组合。"
+                .to_string(),
+            category: "其他工具".to_string(),
+            entry_prefix: format!("bundle:{}", FEISHU_BUNDLE_ID),
+            exists: feishu_preset_exists && feishu_skills_exist,
+            item_kind: "bundle".to_string(),
+            member_count: feishu_skill_names.len(),
         });
     }
 
@@ -769,6 +827,89 @@ fn scan_builtin_preset_skills_internal(store: &Store, root: &Path) -> Result<Ski
         skills,
         ignored_plugin_skills: 0,
     })
+}
+
+fn install_feishu_builtin_skill_bundle(
+    store: &Store,
+    root: &Path,
+    changed: &mut usize,
+    skipped: &mut usize,
+    errors: &mut Vec<String>,
+) -> Result<()> {
+    let names = list_feishu_builtin_skill_names(root)?;
+    if names.is_empty() {
+        return Ok(());
+    }
+
+    let mut member_ids = Vec::new();
+    let before_changed = *changed;
+
+    for name in names {
+        let id = slugify(&name);
+        let source = root.join(&name);
+        let target = store.skill_path(&id);
+        if target.exists() {
+            *skipped += 1;
+            member_ids.push(id);
+            continue;
+        }
+        match import_builtin_preset_skill(&source, &target) {
+            Ok(()) => {
+                *changed += 1;
+                member_ids.push(id);
+            }
+            Err(error) => {
+                if target.exists() {
+                    let _ = remove_path(&target);
+                }
+                errors.push(format!("{}：{:#}", name, error));
+            }
+        }
+    }
+
+    if member_ids.is_empty() {
+        return Ok(());
+    }
+
+    member_ids.sort();
+    let preset_already_complete = store
+        .load_presets()?
+        .into_iter()
+        .find(|preset| preset.id == FEISHU_BUNDLE_PRESET_ID)
+        .is_some_and(|preset| member_ids.iter().all(|id| preset.skill_ids.contains(id)));
+    store
+        .upsert_preset(
+            Some(FEISHU_BUNDLE_PRESET_ID.to_string()),
+            FEISHU_BUNDLE_NAME.to_string(),
+            FEISHU_BUNDLE_DESCRIPTION.to_string(),
+            member_ids,
+        )
+        .context("无法创建飞书技能组")?;
+    if *changed == before_changed && !preset_already_complete {
+        *changed += 1;
+    }
+    Ok(())
+}
+
+fn list_feishu_builtin_skill_names(root: &Path) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(root).context("无法读取飞书预置 Skill")? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() || !path.join("SKILL.md").exists() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if is_feishu_builtin_skill_name(&name) {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn is_feishu_builtin_skill_name(name: &str) -> bool {
+    name.starts_with("lark-")
 }
 
 fn import_builtin_preset_skill(source: &Path, target: &Path) -> Result<()> {
@@ -965,6 +1106,7 @@ fn package_skill_order(name: &str) -> usize {
         "agent-browser" => 11,
         "find-skills" => 12,
         "skill-creator" => 13,
+        FEISHU_BUNDLE_ID => 14,
         _ => 99,
     }
 }
