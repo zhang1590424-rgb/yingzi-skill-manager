@@ -1458,6 +1458,9 @@ export default function App() {
     view === "settings" ? "settings-mode" : "",
   ].filter(Boolean).join(" ");
   const shouldShowDetailPane = view === "presets" || (view === "library" && Boolean(selectedSkill));
+  const shouldMountDetailPane = view === "presets" || view === "library";
+  const selectedDetailKey = selected && "id" in selected ? `${selected.type}:${selected.id}` : selected?.type ?? "none";
+  const detailPaneKey = `${view}:${selectedDetailKey}`;
 
   if (onboardingCompleted === false) {
     return (
@@ -1635,8 +1638,10 @@ export default function App() {
                 renderMiddle()
               )}
             </div>
-            {shouldShowDetailPane ? (
-              <div className="detail-pane">{renderDetail()}</div>
+            {shouldMountDetailPane ? (
+              <div key={detailPaneKey} className={shouldShowDetailPane ? "detail-pane" : "detail-pane is-closed"}>
+                {shouldShowDetailPane ? renderDetail() : null}
+              </div>
             ) : null}
           </section>
         )}
