@@ -3227,8 +3227,16 @@ details[open] > summary .summary-open {
 }
 
 .settings-list h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
   font-size: 14px;
   font-weight: 680;
+}
+
+.settings-list h2 svg {
+  color: var(--text-soft);
 }
 
 .settings-list h3 {
@@ -3242,16 +3250,13 @@ details[open] > summary .summary-open {
   gap: 14px;
 }
 
-.application-section {
+.target-section {
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.62);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(248, 250, 252, 0.68)),
+    var(--surface-strong);
   padding: 14px;
-}
-
-.local-data-section {
-  border-top: 1px solid var(--line-soft);
-  padding-top: 16px;
 }
 
 .section-title-row {
@@ -3267,7 +3272,7 @@ details[open] > summary .summary-open {
 }
 
 .section-title-row p,
-.settings-subsection-header p {
+.settings-section-body p {
   max-width: 620px;
   margin: 4px 0 0;
   color: var(--text-soft);
@@ -3275,33 +3280,12 @@ details[open] > summary .summary-open {
   line-height: 1.5;
 }
 
-.settings-subsection {
-  display: grid;
-  gap: 8px;
-}
-
-.settings-subsection + .settings-subsection {
-  border-top: 1px solid var(--line-soft);
-  padding-top: 14px;
-}
-
-.settings-subsection-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.settings-subsection-header > div {
-  min-width: 0;
-}
-
-.settings-subsection-body {
+.settings-section-body {
   display: grid;
   gap: 0;
 }
 
-.settings-subsection-body .empty-state {
+.settings-section-body .empty-state {
   min-height: 132px;
   border: 1px dashed var(--line-soft);
   border-radius: var(--radius);
@@ -3339,7 +3323,7 @@ details[open] > summary .summary-open {
     transform var(--motion-base) var(--ease-emphasized);
 }
 
-.settings-subsection-body .setting-row:first-child {
+.settings-section-body .setting-row:first-child {
   border-top: 0;
 }
 

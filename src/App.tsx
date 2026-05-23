@@ -1676,7 +1676,7 @@ export default function App() {
               <PaneHeader
                 view={view}
                 title={view === "global" ? selectedAgent?.name ?? "我的 Agent" : view === "projects" ? selectedProject?.name ?? "我的项目" : undefined}
-                subtitle={view === "settings" ? "对象和本地路径" : view === "projects" && selectedProject ? "项目整体应用到所有 Agent" : view === "global" && selectedAgent ? selectedAgent.globalPath : undefined}
+                subtitle={view === "settings" ? "Agent、项目与技能根目录" : view === "projects" && selectedProject ? "项目整体应用到所有 Agent" : view === "global" && selectedAgent ? selectedAgent.globalPath : undefined}
                 count={
                   view === "library"
                     ? filteredSkills.length
@@ -3487,93 +3487,93 @@ function SettingsPanel({
     <div className="settings-list">
       <HealthOverview issues={healthIssues} onSelect={onSelectHealthIssue} />
 
-      <section className="settings-section application-section">
+      <section className="settings-section target-section agent-target-section">
         <div className="section-title-row">
           <div>
-            <h2>应用位置</h2>
-            <p>管理 Skill 会被应用到哪些 Agent 和项目。技能主库仍是唯一事实源，应用位置只保存软链接关系。</p>
+            <h2>
+              <Globe2 size={15} />
+              我的 Agent
+            </h2>
+            <p>管理各 Agent 的全局 Skill 目录。系统会据此识别名称，并推断项目内的 Skill 目录规则。</p>
           </div>
+          <button
+            className="icon-button"
+            aria-label="添加 Agent"
+            title="添加 Agent"
+            onClick={onPickAgent}
+          >
+            <Plus size={16} />
+          </button>
         </div>
-
-        <div className="settings-subsection">
-          <div className="settings-subsection-header">
-            <div>
-              <h3>我的 Agent</h3>
-              <p>选择 Agent 的全局 Skill 目录，系统自动识别名称和项目目录规则。</p>
-            </div>
-            <button
-              className="icon-button"
-              aria-label="添加 Agent"
-              title="添加 Agent"
-              onClick={onPickAgent}
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-          <div className="settings-subsection-body">
-            {state.agents.map((agent) => (
-              <AgentSettingRow
-                key={agent.id}
-                agent={agent}
-                canRemove={state.agents.length > 1}
-                onPickPath={onUpdateAgentPath}
-                onRemove={onRemoveAgent}
-                onToggleEnabled={onToggleAgentEnabled}
-              />
-            ))}
-          </div>
-        </div>
-
-        <div className="settings-subsection">
-          <div className="settings-subsection-header">
-            <div>
-              <h3>项目</h3>
-              <p>只管理手动添加的项目路径，不自动扫描本机项目。</p>
-            </div>
-            <button
-              className="icon-button"
-              aria-label="添加项目"
-              title="添加项目"
-              onClick={onPickProject}
-            >
-              <FolderPlus size={16} />
-            </button>
-          </div>
-          <div className="settings-subsection-body">
-            {state.projects.length ? (
-              state.projects.map((project) => (
-                <div key={project.id} className="setting-row project-setting-row">
-                  <div className="setting-row-main">
-                    <div>
-                      <strong>{project.name}</strong>
-                      <small>{project.exists ? "路径已存在" : "路径不存在"}</small>
-                    </div>
-                    <code>{project.path}</code>
-                  </div>
-                  <div className="setting-row-actions">
-                    <button
-                      className="icon-button danger"
-                      aria-label={`移除项目 ${project.name}`}
-                      title="移除项目"
-                      onClick={() => onRemoveProject(project.id)}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <EmptyState title="还没有手动添加的项目" action="添加项目" onAction={onPickProject} />
-            )}
-          </div>
+        <div className="settings-section-body">
+          {state.agents.map((agent) => (
+            <AgentSettingRow
+              key={agent.id}
+              agent={agent}
+              canRemove={state.agents.length > 1}
+              onPickPath={onUpdateAgentPath}
+              onRemove={onRemoveAgent}
+              onToggleEnabled={onToggleAgentEnabled}
+            />
+          ))}
         </div>
       </section>
 
-      <section className="settings-section local-data-section">
+      <section className="settings-section target-section project-target-section">
         <div className="section-title-row">
           <div>
-            <h2>本机数据</h2>
-            <p>这些路径用于定位主库、配置和本地数据库；日常应用 Skill 时一般不需要改动。</p>
+            <h2>
+              <FolderKanban size={15} />
+              我的项目
+            </h2>
+            <p>只管理手动添加的项目路径，不自动扫描本机项目。项目路径不存在时会阻断项目级应用。</p>
+          </div>
+          <button
+            className="icon-button"
+            aria-label="添加项目"
+            title="添加项目"
+            onClick={onPickProject}
+          >
+            <FolderPlus size={16} />
+          </button>
+        </div>
+        <div className="settings-section-body">
+          {state.projects.length ? (
+            state.projects.map((project) => (
+              <div key={project.id} className="setting-row project-setting-row">
+                <div className="setting-row-main">
+                  <div>
+                    <strong>{project.name}</strong>
+                    <small>{project.exists ? "路径已存在" : "路径不存在"}</small>
+                  </div>
+                  <code>{project.path}</code>
+                </div>
+                <div className="setting-row-actions">
+                  <button
+                    className="icon-button danger"
+                    aria-label={`移除项目 ${project.name}`}
+                    title="移除项目"
+                    onClick={() => onRemoveProject(project.id)}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+            ))
+          ) : (
+            <EmptyState title="还没有手动添加的项目" action="添加项目" onAction={onPickProject} />
+          )}
+        </div>
+      </section>
+
+      <section className="settings-section target-section local-data-section">
+        <div className="section-title-row">
+          <div>
+            <h2>
+              <Archive size={15} />
+              技能根目录
+            </h2>
+            <p>以技能主库为本地事实源，同时展示关联的数据库和配置文件位置。</p>
           </div>
         </div>
         <div className="settings-key-grid">
