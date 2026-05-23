@@ -3046,39 +3046,52 @@ details[open] > summary .summary-open {
 
 .empty-guidance {
   display: grid;
-  grid-template-columns: minmax(140px, 190px) minmax(0, 360px);
-  align-items: center;
-  justify-content: center;
-  gap: 24px;
+  place-items: center;
+  align-content: center;
+  gap: 14px;
+  flex: 1 1 auto;
   min-height: 360px;
-  padding: 28px;
-  color: var(--text);
+  padding: 34px 48px 42px;
+  text-align: center;
 }
 
-.empty-guidance img,
+.empty-guidance img {
+  display: block;
+  width: min(320px, 72%);
+  max-height: 220px;
+  object-fit: contain;
+  user-select: none;
+}
+
+.empty-guidance-copy {
+  display: grid;
+  gap: 7px;
+  justify-items: center;
+  max-width: 430px;
+}
+
+.empty-guidance-copy strong {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.empty-guidance-copy p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
 .empty-guidance-mark {
-  width: min(190px, 100%);
-  aspect-ratio: 1;
+  width: min(220px, 60%);
+  aspect-ratio: 16 / 11;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.74), rgba(234, 239, 246, 0.68)),
     radial-gradient(circle at 36% 34%, rgba(109, 133, 166, 0.18), transparent 42%);
-  object-fit: cover;
-}
-
-.empty-guidance strong {
-  display: block;
-  font-size: 18px;
-  font-weight: 690;
-  line-height: 1.3;
-}
-
-.empty-guidance p {
-  margin: 8px 0 16px;
-  color: var(--text-soft);
-  font-size: 13px;
-  line-height: 1.7;
 }
 
 .spin {

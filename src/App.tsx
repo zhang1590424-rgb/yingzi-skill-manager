@@ -160,6 +160,12 @@ const transferIssueFilterOrder: StatusFilter[] = ["issues", "conflict", "unmanag
 const FEEDBACK_AUTO_DISMISS_MS = 2400;
 const PRODUCT_NAME = "影子";
 const PRODUCT_TAGLINE = "本地 Skill 工作台";
+const EMPTY_STATE_ILLUSTRATIONS = {
+  skills: "/empty-states/skills.png",
+  compositions: "/empty-states/compositions.png",
+  agents: "/empty-states/agents.png",
+  projects: "/empty-states/projects.png",
+};
 
 type Selection =
   | { type: "skill"; id: string }
@@ -1026,6 +1032,18 @@ export default function App() {
     if (!state) return null;
 
     if (view === "library") {
+      if (!state.skills.length) {
+        return (
+          <EmptyGuidance
+            illustration={EMPTY_STATE_ILLUSTRATIONS.skills}
+            title="导入第一个技能"
+            description="导入后会进入本地技能列表，之后可以按需应用到我的 Agent 或我的项目。"
+            action="导入技能"
+            actionIcon={<Upload size={16} />}
+            onAction={() => setImportSkillOpen(true)}
+          />
+        );
+      }
       return (
         <>
           <StatusFilterBar
@@ -1056,6 +1074,18 @@ export default function App() {
     }
 
     if (view === "global") {
+      if (!state.skills.length && !state.presets.length && !transferItems.length) {
+        return (
+          <EmptyGuidance
+            illustration={EMPTY_STATE_ILLUSTRATIONS.agents}
+            title="先导入可应用的技能"
+            description="导入后，这里会显示未应用和已应用的 Skill，你可以把技能连接到当前 Agent。"
+            action="导入技能"
+            actionIcon={<Upload size={16} />}
+            onAction={() => setImportSkillOpen(true)}
+          />
+        );
+      }
       return (
         <>
           {transferIssueFilterOptions.length ? (
@@ -1084,39 +1114,53 @@ export default function App() {
     }
 
     if (view === "projects") {
+      if (!selectedProjectId) {
+        return (
+          <EmptyGuidance
+            illustration={EMPTY_STATE_ILLUSTRATIONS.projects}
+            title="添加第一个项目"
+            description="添加后可以按项目查看各 Agent 的 Skill 应用状态，并把技能应用到项目目录。"
+            action="添加项目"
+            actionIcon={<FolderPlus size={16} />}
+            onAction={pickAndAddProject}
+          />
+        );
+      }
+      if (!state.skills.length && !state.presets.length && !transferItems.length) {
+        return (
+          <EmptyGuidance
+            illustration={EMPTY_STATE_ILLUSTRATIONS.projects}
+            title="这个项目还没有可应用的技能"
+            description="先导入一个包含 SKILL.md 的技能，再把它应用到这个项目下的 Agent。"
+            action="导入技能"
+            actionIcon={<Upload size={16} />}
+            onAction={() => setImportSkillOpen(true)}
+          />
+        );
+      }
       return (
         <>
-          {selectedProjectId ? (
-            <>
-              {transferIssueFilterOptions.length ? (
-                <StatusFilterBar
-                  value={statusFilter}
-                  options={transferIssueFilterOptions}
-                  onChange={changeStatusFilter}
-                />
-              ) : null}
-              <ImportExistingToolbar
-                statuses={transferItems.flatMap((item) => item.statuses)}
-                onImport={adoptStatuses}
-              />
-              <SkillTransferView
-                appliedItems={appliedTransferItems}
-                availableItems={availableTransferItems}
-                selectedId={selected?.type === "transferSkill" ? selected.id : null}
-                expandedPresetIds={expandedTransferPresetIds}
-                onSelect={(item) => setSelected({ type: "transferSkill", id: item.id })}
-                onTogglePreset={(presetId) => toggleSetValue(setExpandedTransferPresetIds, presetId)}
-                onMove={moveTransferItem}
-                working={working}
-              />
-            </>
-          ) : (
-            <EmptyState
-              title="还没有纳入管理的项目"
-              action="添加项目"
-              onAction={pickAndAddProject}
+          {transferIssueFilterOptions.length ? (
+            <StatusFilterBar
+              value={statusFilter}
+              options={transferIssueFilterOptions}
+              onChange={changeStatusFilter}
             />
-          )}
+          ) : null}
+          <ImportExistingToolbar
+            statuses={transferItems.flatMap((item) => item.statuses)}
+            onImport={adoptStatuses}
+          />
+          <SkillTransferView
+            appliedItems={appliedTransferItems}
+            availableItems={availableTransferItems}
+            selectedId={selected?.type === "transferSkill" ? selected.id : null}
+            expandedPresetIds={expandedTransferPresetIds}
+            onSelect={(item) => setSelected({ type: "transferSkill", id: item.id })}
+            onTogglePreset={(presetId) => toggleSetValue(setExpandedTransferPresetIds, presetId)}
+            onMove={moveTransferItem}
+            working={working}
+          />
         </>
       );
     }
@@ -1289,7 +1333,7 @@ export default function App() {
 
     if (view === "global" || view === "projects") {
       return (
-        <ContextPanel title={view === "global" ? selectedAgent?.name ?? "全局 Agent" : selectedProject?.name ?? "项目应用"}>
+        <ContextPanel title={view === "global" ? selectedAgent?.name ?? "我的 Agent" : selectedProject?.name ?? "我的项目"}>
           <EmptyState
             title={view === "projects" && !selectedProjectId
               ? "还没有纳入管理的项目"
@@ -1404,8 +1448,8 @@ export default function App() {
                 </button>
                 <button
                   className="icon-button"
-                  aria-label="查看全局 Agent"
-                  title="查看全局 Agent"
+                  aria-label="查看我的 Agent"
+                  title="查看我的 Agent"
                   onClick={() => setView("global")}
                 >
                   <Globe2 size={16} />
@@ -1527,7 +1571,7 @@ export default function App() {
           </button>
 
           <div className="nav-section">
-            <div className="nav-section-header">全局 Agent</div>
+            <div className="nav-section-header">我的 Agent</div>
             {state?.agents.map((agent) => (
               <button
                 key={agent.id}
@@ -1542,7 +1586,7 @@ export default function App() {
           </div>
 
           <div className="nav-section">
-            <div className="nav-section-header">项目应用</div>
+            <div className="nav-section-header">我的项目</div>
             {state?.projects.length ? (
               state.projects.map((project) => (
                 <button
@@ -1561,7 +1605,13 @@ export default function App() {
                 </button>
               ))
             ) : (
-              <div className="nav-empty-hint">暂无项目</div>
+              <button
+                className={view === "projects" && !selectedProjectId ? "nav-item sub active" : "nav-item sub"}
+                onClick={() => selectView("projects")}
+              >
+                <FolderKanban size={16} />
+                <span>我的项目</span>
+              </button>
             )}
           </div>
 
@@ -1625,7 +1675,7 @@ export default function App() {
             <div className="list-pane">
               <PaneHeader
                 view={view}
-                title={view === "global" ? selectedAgent?.name ?? "全局 Agent" : view === "projects" ? selectedProject?.name ?? "项目应用" : undefined}
+                title={view === "global" ? selectedAgent?.name ?? "我的 Agent" : view === "projects" ? selectedProject?.name ?? "我的项目" : undefined}
                 subtitle={view === "settings" ? "对象和本地路径" : view === "projects" && selectedProject ? "项目整体应用到所有 Agent" : view === "global" && selectedAgent ? selectedAgent.globalPath : undefined}
                 count={
                   view === "library"
@@ -1816,8 +1866,8 @@ function PaneHeader({
 }) {
   const title: Record<ViewKey, string> = {
     library: "技能列表",
-    global: "全局 Agent",
-    projects: "项目应用",
+    global: "我的 Agent",
+    projects: "我的项目",
     presets: "技能组合",
     settings: "设置",
   };
@@ -3226,16 +3276,18 @@ function PresetList({
 }) {
   return (
     <>
-      <div className="list-toolbar">
-        <button
-          className="icon-button"
-          aria-label="新建技能组合"
-          title="新建组合"
-          onClick={onCreate}
-        >
-          <Plus size={16} />
-        </button>
-      </div>
+      {totalCount ? (
+        <div className="list-toolbar">
+          <button
+            className="icon-button"
+            aria-label="新建技能组合"
+            title="新建组合"
+            onClick={onCreate}
+          >
+            <Plus size={16} />
+          </button>
+        </div>
+      ) : null}
       {presets.length ? (
         <div className="rows">
           {presets.map((preset) => {
@@ -3298,14 +3350,21 @@ function PresetList({
           })}
         </div>
       ) : (
-        <EmptyState
-          title={totalCount ? "没有匹配的技能组合" : "还没有技能组合"}
-          description={totalCount
-            ? "换个关键词，或清空搜索后再看全部组合。"
-            : "把多个技能组织成一个可批量应用的组合。组合不会生成独立 Skill，只会批量处理成员。"}
-          action={totalCount ? undefined : "新建组合"}
-          onAction={totalCount ? undefined : onCreate}
-        />
+        totalCount ? (
+          <EmptyState
+            title="没有匹配的技能组合"
+            description="换个关键词，或清空搜索后再看全部组合。"
+          />
+        ) : (
+          <EmptyGuidance
+            illustration={EMPTY_STATE_ILLUSTRATIONS.compositions}
+            title="创建第一个技能组合"
+            description="创建后可以把多个 Skill 组织成一个能力单元，之后一键应用到我的 Agent 或我的项目。"
+            action="新建组合"
+            actionIcon={<Plus size={16} />}
+            onAction={onCreate}
+          />
+        )
       )}
     </>
   );
@@ -3439,7 +3498,7 @@ function SettingsPanel({
         <div className="settings-subsection">
           <div className="settings-subsection-header">
             <div>
-              <h3>全局 Agent</h3>
+              <h3>我的 Agent</h3>
               <p>选择 Agent 的全局 Skill 目录，系统自动识别名称和项目目录规则。</p>
             </div>
             <button
@@ -4427,18 +4486,18 @@ function EmptyGuidance({
   return (
     <div className="empty-guidance">
       {!imageFailed ? (
-        <img src={illustration} alt="" onError={() => setImageFailed(true)} />
+        <img src={illustration} alt="" draggable={false} onError={() => setImageFailed(true)} />
       ) : (
         <div className="empty-guidance-mark" aria-hidden="true" />
       )}
-      <div>
+      <div className="empty-guidance-copy">
         <strong>{title}</strong>
         <p>{description}</p>
-        <button type="button" className="primary-button" onClick={onAction}>
-          {actionIcon}
-          {action}
-        </button>
       </div>
+      <button type="button" className="primary-button" onClick={onAction}>
+        {actionIcon}
+        {action}
+      </button>
     </div>
   );
 }
