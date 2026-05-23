@@ -42,6 +42,7 @@
 |---|---|---|
 | 使用 GitHub Releases 分发 | 项目可以开源，Release 比网盘更适合版本管理和公开下载 | 朋友拿到的是稳定 Release 链接，而不是临时文件分享 |
 | 安装包格式使用 `.dmg` | Mac 用户熟悉“打开 DMG，拖到 Applications”的安装方式 | 安装步骤接近普通 Mac 软件 |
+| 使用 ad-hoc 签名 | Apple Silicon 上应用仍需要基本代码签名；`-` 签名不需要 Apple Developer Program | 降低“应用已损坏”类提示概率，但不会消除 Gatekeeper 的未公证提醒 |
 | Release 标记为 pre-release | 当前没有签名公证，仍是测试版 | 测试者预期更准确，不会误以为是正式稳定版 |
 | `.dmg` 作为 Release asset，不进入 Git | 二进制产物不适合进源码历史 | 仓库克隆更轻，版本历史更干净 |
 | 第一版默认 `arm64` | 朋友测试优先覆盖现代 Apple Silicon Mac，降低构建复杂度 | Intel Mac 用户暂时不能使用，后续可补 universal |

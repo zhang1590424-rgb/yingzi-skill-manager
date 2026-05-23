@@ -5,6 +5,7 @@ src-tauri/target/
 src-tauri/gen/
 /技能中枢.app/
 /影子.app/
+/release/
 .DS_Store
 *.log
 .env

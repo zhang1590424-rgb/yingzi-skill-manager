@@ -28,6 +28,9 @@
     "active": true,
     "targets": ["app"],
     "icon": ["icons/icon.png"],
-    "resources": ["resources/preset-skills"]
+    "resources": ["resources/preset-skills"],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }

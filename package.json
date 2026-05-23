@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build && node scripts/copy-macos-app.mjs"
+    "tauri:build": "tauri build && node scripts/copy-macos-app.mjs",
+    "tauri:build:test-dmg": "tauri build --bundles app,dmg && node scripts/copy-macos-app.mjs && node scripts/prepare-github-release.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
