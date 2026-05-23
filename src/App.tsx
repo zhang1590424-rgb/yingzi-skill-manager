@@ -534,8 +534,8 @@ export default function App() {
       return;
     }
     if (view === "presets") {
-      if (selected?.type === "preset" && queriedPresets.some((preset) => preset.id === selected.id)) return;
-      setSelected(queriedPresets[0] ? { type: "preset", id: queriedPresets[0].id } : null);
+      if (!selected || (selected.type === "preset" && queriedPresets.some((preset) => preset.id === selected.id))) return;
+      setSelected(null);
     }
   }, [
     appliedTransferItems,
@@ -1123,10 +1123,22 @@ export default function App() {
       return (
         <PresetList
           presets={queriedPresets}
+          totalCount={state.presets.length}
           skills={state.skills}
           selectedId={selected?.type === "preset" ? selected.id : null}
           onSelect={(preset) => setSelected({ type: "preset", id: preset.id })}
+          onApply={(preset) => setDrawer({ type: "preset", presetId: preset.id })}
+          onEdit={(preset) =>
+            setPresetDraft({
+              id: preset.id,
+              name: presetDisplayName(preset),
+              description: preset.description,
+              skillIds: preset.skillIds,
+            })
+          }
+          onDelete={confirmDeletePreset}
           onCreate={() => setPresetDraft({ id: null, name: "", description: "", skillIds: [] })}
+          working={working}
         />
       );
     }
@@ -1300,7 +1312,11 @@ export default function App() {
       const presetProblemCount = missingMemberCount + abnormalMemberCount;
       const canApplyPreset = availableMemberCount > 0;
       return (
-        <ContextPanel title={presetDisplayName(selectedPreset)}>
+        <ContextPanel
+          title={presetDisplayName(selectedPreset)}
+          onClose={() => setSelected(null)}
+          closeLabel="关闭组合详情"
+        >
           <div className="detail-status-row">
             <DetailBadge tone={selectedPreset.skillIds.length ? "note" : "muted"}>
               {selectedPreset.skillIds.length ? `${selectedPreset.skillIds.length} 个成员` : "空组合"}
@@ -1355,17 +1371,7 @@ export default function App() {
           <DetailSection title="成员清单">
             <PresetMemberList members={presetMembers} />
           </DetailSection>
-          <DetailSection title="组合规则">
-            <p className="muted-text">组合本身不会被软链接；应用或收回组合时，只批量处理成员 Skill。</p>
-          </DetailSection>
-        </ContextPanel>
-      );
-    }
-
-    if (view === "presets") {
-      return (
-        <ContextPanel title="技能组合">
-          <EmptyState title="还没有技能组合" action="新建组合" onAction={() => setPresetDraft({ id: null, name: "", description: "", skillIds: [] })} />
+          <p className="muted-text preset-rule-note">组合本身不会被软链接；应用或收回组合时，只批量处理成员 Skill。</p>
         </ContextPanel>
       );
     }
@@ -1454,10 +1460,12 @@ export default function App() {
     "workspace",
     view === "library" && selectedSkill ? "library-detail-open" : "",
     view === "library" && !selectedSkill ? "library-list-only" : "",
+    view === "presets" && selectedPreset ? "preset-detail-open" : "",
+    view === "presets" && !selectedPreset ? "preset-list-only" : "",
     view === "global" || view === "projects" ? "transfer-mode" : "",
     view === "settings" ? "settings-mode" : "",
   ].filter(Boolean).join(" ");
-  const shouldShowDetailPane = view === "presets" || (view === "library" && Boolean(selectedSkill));
+  const shouldShowDetailPane = (view === "presets" && Boolean(selectedPreset)) || (view === "library" && Boolean(selectedSkill));
   const shouldMountDetailPane = view === "presets" || view === "library";
   const selectedDetailKey = selected && "id" in selected ? `${selected.type}:${selected.id}` : selected?.type ?? "none";
   const detailPaneKey = `${view}:${selectedDetailKey}`;
@@ -3066,16 +3074,26 @@ function ImportExistingToolbar({
 
 function PresetList({
   presets,
+  totalCount,
   skills,
   selectedId,
   onSelect,
+  onApply,
+  onEdit,
+  onDelete,
   onCreate,
+  working,
 }: {
   presets: Preset[];
+  totalCount: number;
   skills: Skill[];
   selectedId: string | null;
   onSelect: (preset: Preset) => void;
+  onApply: (preset: Preset) => void;
+  onEdit: (preset: Preset) => void;
+  onDelete: (preset: Preset) => void;
   onCreate: () => void;
+  working: boolean;
 }) {
   return (
     <>
@@ -3091,27 +3109,74 @@ function PresetList({
       </div>
       {presets.length ? (
         <div className="rows">
-          {presets.map((preset) => (
-            <button
-              key={preset.id}
-              className={["row", "preset-row", selectedId === preset.id ? "selected" : ""].filter(Boolean).join(" ")}
-              onClick={() => onSelect(preset)}
-            >
-              <span className="preset-row-icon" aria-hidden="true">
-                <Layers3 size={16} />
-              </span>
-              <span className="row-main">
-                <strong>{presetDisplayName(preset)}</strong>
-                <small>{preset.description || skillNames(preset, skills)}</small>
-              </span>
-              <span className="row-meta">
-                <span>{preset.skillIds.length} 个技能</span>
-              </span>
-            </button>
-          ))}
+          {presets.map((preset) => {
+            const summary = summarizePresetMembers(preset, skills);
+            const canApply = summary.availableMemberCount > 0;
+            return (
+              <div
+                key={preset.id}
+                className={["row", "preset-row", selectedId === preset.id ? "selected" : ""].filter(Boolean).join(" ")}
+              >
+                <span className="preset-row-icon" aria-hidden="true">
+                  <Layers3 size={16} />
+                </span>
+                <button type="button" className="row-content-button" onClick={() => onSelect(preset)}>
+                  <span className="row-main">
+                    <strong>{presetDisplayName(preset)}</strong>
+                    <small>{preset.description || skillNames(preset, skills) || "还没有描述"}</small>
+                  </span>
+                </button>
+                <div className="preset-row-trailing">
+                  <span className="row-meta">
+                    <span>{summary.memberCount ? `${summary.memberCount} 个技能` : "空组合"}</span>
+                    <span className={summary.problemCount ? "mini-warn" : undefined}>{summary.statusLabel}</span>
+                  </span>
+                  <div className="skill-card-actions preset-card-actions" aria-label={`${presetDisplayName(preset)} 操作`}>
+                    <button
+                      type="button"
+                      className="compact-action primary"
+                      disabled={working || !canApply}
+                      onClick={() => onApply(preset)}
+                      title={canApply ? "应用组合" : "空组合不能应用"}
+                    >
+                      <Link2 size={14} />
+                      <span>应用</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button micro"
+                      disabled={working}
+                      onClick={() => onEdit(preset)}
+                      aria-label={`编辑 ${presetDisplayName(preset)}`}
+                      title="编辑"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button micro danger"
+                      disabled={working}
+                      onClick={() => onDelete(preset)}
+                      aria-label={`删除 ${presetDisplayName(preset)}`}
+                      title="删除"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       ) : (
-        <EmptyState title="还没有技能组合" action="新建组合" onAction={onCreate} />
+        <EmptyState
+          title={totalCount ? "没有匹配的技能组合" : "还没有技能组合"}
+          description={totalCount
+            ? "换个关键词，或清空搜索后再看全部组合。"
+            : "把多个技能组织成一个可批量应用的组合。组合不会生成独立 Skill，只会批量处理成员。"}
+          action={totalCount ? undefined : "新建组合"}
+          onAction={totalCount ? undefined : onCreate}
+        />
       )}
     </>
   );
@@ -3234,8 +3299,95 @@ function SettingsPanel({
     <div className="settings-list">
       <HealthOverview issues={healthIssues} onSelect={onSelectHealthIssue} />
 
-      <section>
-        <h2>本地配置</h2>
+      <section className="settings-section application-section">
+        <div className="section-title-row">
+          <div>
+            <h2>应用位置</h2>
+            <p>管理 Skill 会被应用到哪些 Agent 和项目。技能主库仍是唯一事实源，应用位置只保存软链接关系。</p>
+          </div>
+        </div>
+
+        <div className="settings-subsection">
+          <div className="settings-subsection-header">
+            <div>
+              <h3>全局 Agent</h3>
+              <p>选择 Agent 的全局 Skill 目录，系统自动识别名称和项目目录规则。</p>
+            </div>
+            <button
+              className="icon-button"
+              aria-label="添加 Agent"
+              title="添加 Agent"
+              onClick={onPickAgent}
+            >
+              <Plus size={16} />
+            </button>
+          </div>
+          <div className="settings-subsection-body">
+            {state.agents.map((agent) => (
+              <AgentSettingRow
+                key={agent.id}
+                agent={agent}
+                canRemove={state.agents.length > 1}
+                onPickPath={onUpdateAgentPath}
+                onRemove={onRemoveAgent}
+                onToggleEnabled={onToggleAgentEnabled}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-subsection">
+          <div className="settings-subsection-header">
+            <div>
+              <h3>项目</h3>
+              <p>只管理手动添加的项目路径，不自动扫描本机项目。</p>
+            </div>
+            <button
+              className="icon-button"
+              aria-label="添加项目"
+              title="添加项目"
+              onClick={onPickProject}
+            >
+              <FolderPlus size={16} />
+            </button>
+          </div>
+          <div className="settings-subsection-body">
+            {state.projects.length ? (
+              state.projects.map((project) => (
+                <div key={project.id} className="setting-row project-setting-row">
+                  <div className="setting-row-main">
+                    <div>
+                      <strong>{project.name}</strong>
+                      <small>{project.exists ? "路径已存在" : "路径不存在"}</small>
+                    </div>
+                    <code>{project.path}</code>
+                  </div>
+                  <div className="setting-row-actions">
+                    <button
+                      className="icon-button danger"
+                      aria-label={`移除项目 ${project.name}`}
+                      title="移除项目"
+                      onClick={() => onRemoveProject(project.id)}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <EmptyState title="还没有手动添加的项目" action="添加项目" onAction={onPickProject} />
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section local-data-section">
+        <div className="section-title-row">
+          <div>
+            <h2>本机数据</h2>
+            <p>这些路径用于定位主库、配置和本地数据库；日常应用 Skill 时一般不需要改动。</p>
+          </div>
+        </div>
         <div className="settings-key-grid">
           <KeyValue label="主库路径" value={state.skillsRoot} />
           <KeyValue label="数据库" value={state.databasePath} />
@@ -3259,75 +3411,6 @@ function SettingsPanel({
             <RefreshCw size={16} />
           </button>
         </div>
-      </section>
-
-      <section>
-        <div className="section-title-row">
-          <div>
-            <h2>Agent</h2>
-            <p>选择 Agent 的全局 Skill 目录，系统自动识别名称和项目目录规则。未启用的 Agent 不会出现在工作台和扫描结果里。</p>
-          </div>
-          <button
-            className="icon-button"
-            aria-label="添加 Agent"
-            title="添加 Agent"
-            onClick={onPickAgent}
-          >
-            <Plus size={16} />
-          </button>
-        </div>
-        {state.agents.map((agent) => (
-          <AgentSettingRow
-            key={agent.id}
-            agent={agent}
-            canRemove={state.agents.length > 1}
-            onPickPath={onUpdateAgentPath}
-            onRemove={onRemoveAgent}
-            onToggleEnabled={onToggleAgentEnabled}
-          />
-        ))}
-      </section>
-
-      <section>
-        <div className="section-title-row">
-          <div>
-            <h2>项目</h2>
-            <p>只管理手动添加的项目路径，不自动扫描本机项目。</p>
-          </div>
-          <button
-            className="icon-button"
-            aria-label="添加项目"
-            title="添加项目"
-            onClick={onPickProject}
-          >
-            <FolderPlus size={16} />
-          </button>
-        </div>
-        {state.projects.length ? (
-          state.projects.map((project) => (
-            <div key={project.id} className="setting-row project-setting-row">
-              <div className="setting-row-main">
-                <div>
-                  <strong>{project.name}</strong>
-                  <small>{project.exists ? "路径已存在" : "路径不存在"}</small>
-                </div>
-                <code>{project.path}</code>
-              </div>
-              <div className="setting-row-actions">
-                <button
-                  className="icon-button danger"
-                  aria-label={`移除项目 ${project.name}`}
-                  title="移除项目"
-                  onClick={() => onRemoveProject(project.id)}
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-          ))
-        ) : (
-          <EmptyState title="还没有手动添加的项目" action="添加项目" onAction={onPickProject} />
-        )}
       </section>
     </div>
   );
@@ -4662,6 +4745,29 @@ function buildPresetMemberRows(preset: Preset, skills: Skill[]): PresetMemberRow
   }));
 }
 
+function summarizePresetMembers(preset: Preset, skills: Skill[]) {
+  const members = buildPresetMemberRows(preset, skills);
+  const availableMemberCount = members.filter((member) => member.skill).length;
+  const missingMemberCount = members.length - availableMemberCount;
+  const abnormalMemberCount = members.filter((member) =>
+    member.skill && (!member.skill.hasSkillMd || member.skill.issueCount > 0)
+  ).length;
+  const problemCount = missingMemberCount + abnormalMemberCount;
+  const statusLabel = !members.length
+    ? "空组合"
+    : problemCount
+      ? `${problemCount} 个问题`
+      : "成员正常";
+  return {
+    memberCount: members.length,
+    availableMemberCount,
+    missingMemberCount,
+    abnormalMemberCount,
+    problemCount,
+    statusLabel,
+  };
+}
+
 function getPresetMemberState(member: PresetMemberRow) {
   if (!member.skill) {
     return { tone: "warn" as const, label: "缺失", icon: AlertTriangle };
@@ -4756,7 +4862,7 @@ function defaultSelectionForView(
     return item ? { type: "transferSkill", id: item.id } : null;
   }
   if (view === "presets") {
-    return state.presets[0] ? { type: "preset", id: state.presets[0].id } : null;
+    return null;
   }
   return { type: "settings" };
 }
