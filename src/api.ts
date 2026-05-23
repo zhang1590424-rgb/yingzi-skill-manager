@@ -45,6 +45,21 @@ export async function importSkillsFromPackage(
   return invoke<PackageImportReport>("import_skills_from_package", { packagePath, skillIds });
 }
 
+export async function scanBuiltinPresetSkills(): Promise<SkillPackageScan> {
+  if (!isTauriRuntime()) {
+    const skills = mockPackageSkills().map((skill) => ({ ...skill, exists: false }));
+    return { packagePath: "builtin", skills, ignoredPluginSkills: 0 };
+  }
+  return invoke<SkillPackageScan>("scan_builtin_preset_skills");
+}
+
+export async function installBuiltinPresetSkills(skillIds: string[]): Promise<PackageImportReport> {
+  if (!isTauriRuntime()) {
+    return { state: mockState("builtin"), changed: skillIds.length, skipped: 0, errors: [] };
+  }
+  return invoke<PackageImportReport>("install_builtin_preset_skills", { skillIds });
+}
+
 export async function deleteSkill(skillId: string): Promise<AppState> {
   if (!isTauriRuntime()) return mockState(skillId);
   return invoke<AppState>("delete_skill", { skillId });
@@ -227,9 +242,9 @@ function mockPackageSkills() {
     { id: "ug-prd-review-jc-style", name: "ug-prd-review-jc-style", displayName: "激励产品评审", description: "评审激励产品方案和上线风险", category: "需求编写", entryPrefix: "mock/skills/ug-prd-review-jc-style" },
     { id: "ab-test-setup", name: "ab-test-setup", displayName: "A/B Test Setup", description: "设计 A/B 测试方案", category: "需求编写", entryPrefix: "mock/skills/ab-test-setup" },
     { id: "experiment-ux-guard", name: "experiment-ux-guard", displayName: "实验体验把关", description: "检查实验和灰度方案体验风险", category: "需求编写", entryPrefix: "mock/skills/experiment-ux-guard" },
-    { id: "ui-ux-pro-max", name: "ui-ux-pro-max", displayName: "ui-ux-pro-max", description: "UI/UX 参考库", category: "UI设计", entryPrefix: "mock/skills/ui-ux-pro-max" },
-    { id: "design-taste-skill-pack", name: "design-taste-skill-pack", displayName: "Taste Skill Pack Router", description: "选择前端视觉风格和组件方向", category: "UI设计", entryPrefix: "mock/skills/design-taste-skill-pack" },
-    { id: "impeccable", name: "impeccable", displayName: "impeccable", description: "产品界面设计、打磨和审计", category: "UI设计", entryPrefix: "mock/skills/impeccable" },
+    { id: "ui-ux-pro-max", name: "ui-ux-pro-max", displayName: "ui-ux-pro-max", description: "UI/UX 参考库", category: "UI 设计", entryPrefix: "mock/skills/ui-ux-pro-max" },
+    { id: "design-taste-skill-pack", name: "design-taste-skill-pack", displayName: "Taste Skill Pack Router", description: "选择前端视觉风格和组件方向", category: "UI 设计", entryPrefix: "mock/skills/design-taste-skill-pack" },
+    { id: "impeccable", name: "impeccable", displayName: "impeccable", description: "产品界面设计、打磨和审计", category: "UI 设计", entryPrefix: "mock/skills/impeccable" },
     { id: "agent-browser", name: "agent-browser", displayName: "agent-browser", description: "浏览器自动化和 Web 测试", category: "其他工具", entryPrefix: "mock/skills/agent-browser" },
     { id: "find-skills", name: "find-skills", displayName: "Find Skills", description: "查找可安装的 Skill", category: "其他工具", entryPrefix: "mock/skills/find-skills" },
     { id: "skill-creator", name: "skill-creator", displayName: "Skill Creator", description: "创建、修改和优化 Skill", category: "其他工具", entryPrefix: "mock/skills/skill-creator" },

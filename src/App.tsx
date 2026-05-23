@@ -40,13 +40,13 @@ import {
   detectDefaultAgents,
   getAppState,
   getOnboardingStatus,
-  importSkillsFromPackage,
+  installBuiltinPresetSkills,
   importSkill,
   listUnmanagedForOnboarding,
   openPath,
   removeAgent,
   removeProject,
-  scanSkillPackage,
+  scanBuiltinPresetSkills,
   setAgentEnabled,
   setOnboardingCompleted,
   updateAgentPath,
@@ -167,8 +167,7 @@ type Selection =
 type TransferColumnKey = "applied" | "available";
 
 const TRANSFER_DRAG_MIME_TYPE = "application/x-skill-hub-transfer-item";
-const DEFAULT_SKILL_PACKAGE_PATH = "/Users/bytedance/Downloads/o3vUSTmq.zip";
-const PACKAGE_CATEGORIES = ["产品创意", "需求编写", "UI设计", "其他工具"] as const;
+const PACKAGE_CATEGORIES = ["产品创意", "需求编写", "UI 设计", "其他工具"] as const;
 
 type TransferDragPayload = {
   id: string;
@@ -1403,7 +1402,7 @@ export default function App() {
             const noticeParts: string[] = [];
             noticeParts.push(`${summary.enabledAgents} 个 Agent`);
             if (summary.adoptedSkills > 0) noticeParts.push(`${summary.adoptedSkills} 个 Skill 入库`);
-            if (summary.installedPackageSkills > 0) noticeParts.push(`${summary.installedPackageSkills} 个预制 Skill`);
+            if (summary.installedPackageSkills > 0) noticeParts.push(`${summary.installedPackageSkills} 个预置 Skill`);
             if (summary.addedProjects > 0) noticeParts.push(`${summary.addedProjects} 个项目`);
             setNotice(`已完成初始化：${noticeParts.join("，")}`);
           } catch (cause) {
@@ -1776,12 +1775,40 @@ type OnboardingSummary = {
   installedPackageSkills: number;
 };
 
-type OnboardingStep = 1 | 2 | 3 | 4;
+type OnboardingStep = 0 | 1 | 2 | 3 | 4;
+
+const onboardingStepMeta: Array<{ id: Exclude<OnboardingStep, 0>; title: string; label: string; description: string }> = [
+  {
+    id: 1,
+    title: "添加 Agent",
+    label: "工具",
+    description: "选择要管理的工具。已检测到的工具会默认选中，也可以先跳过。",
+  },
+  {
+    id: 2,
+    title: "添加项目",
+    label: "项目",
+    description: "把常用项目加入影子，之后可以按项目管理 Skill。也可以稍后再加。",
+  },
+  {
+    id: 3,
+    title: "已有 Skill 导入",
+    label: "整理",
+    description: "这些 Skill 已经在你的工具里。导入后会进入主库，方便统一管理。",
+  },
+  {
+    id: 4,
+    title: "预置 Skill 安装",
+    label: "安装",
+    description: "影子自带一些常用 Skill。选择你想安装的，之后可以在主库里统一管理。",
+  },
+];
 
 function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSummary) => void | Promise<void> }) {
-  const [step, setStep] = useState<OnboardingStep>(1);
+  const [step, setStep] = useState<OnboardingStep>(0);
   const [detectedAgents, setDetectedAgents] = useState<DetectedAgent[]>([]);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
+  const [enabledAgentCount, setEnabledAgentCount] = useState(0);
   const [agentLoading, setAgentLoading] = useState(true);
   const [unmanaged, setUnmanaged] = useState<TargetStatus[]>([]);
   const [selectedAdoptIds, setSelectedAdoptIds] = useState<Set<string>>(new Set());
@@ -1793,13 +1820,12 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
   const [stepNotice, setStepNotice] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [busy, setBusy] = useState(false);
-  const [packagePath, setPackagePath] = useState(DEFAULT_SKILL_PACKAGE_PATH);
-  const [packageScan, setPackageScan] = useState<SkillPackageScan | null>(null);
-  const [packageLoading, setPackageLoading] = useState(false);
-  const [packageAutoScanStarted, setPackageAutoScanStarted] = useState(false);
-  const [selectedPackageSkillIds, setSelectedPackageSkillIds] = useState<Set<string>>(new Set());
-  const [packageInstalledCount, setPackageInstalledCount] = useState(0);
-  const [packageImporting, setPackageImporting] = useState(false);
+  const [presetScan, setPresetScan] = useState<SkillPackageScan | null>(null);
+  const [presetLoading, setPresetLoading] = useState(false);
+  const [presetAutoScanStarted, setPresetAutoScanStarted] = useState(false);
+  const [selectedPresetSkillIds, setSelectedPresetSkillIds] = useState<Set<string>>(new Set());
+  const [presetInstalledCount, setPresetInstalledCount] = useState(0);
+  const [presetInstalling, setPresetInstalling] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -1826,6 +1852,12 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     });
   }
 
+  function goToProjectStep() {
+    setStep(2);
+    setStepError(null);
+    setStepNotice(null);
+  }
+
   async function commitAgentSelection() {
     setBusy(true);
     setStepError(null);
@@ -1833,6 +1865,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
       for (const agent of detectedAgents) {
         await setAgentEnabled(agent.id, selectedAgentIds.has(agent.id));
       }
+      setEnabledAgentCount(selectedAgentIds.size);
     } catch (cause) {
       setStepError(`保存 Agent 选择失败：${cleanErrorMessage(cause)}`);
       setBusy(false);
@@ -1842,22 +1875,22 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     return true;
   }
 
-  async function goToStep2() {
+  async function continueFromAgentStep() {
     if (!(await commitAgentSelection())) return;
-    setStep(2);
+    goToProjectStep();
+  }
+
+  async function goToExistingSkillStep() {
+    setStep(3);
     setUnmanagedLoading(true);
     setStepError(null);
+    setStepNotice(null);
     setUnmanagedScanFailed(false);
     try {
       const list = await listUnmanagedForOnboarding();
       setUnmanaged(list);
       setSelectedAdoptIds(new Set(list.map((status) => status.id)));
-      if (!list.length) {
-        // 无存量直接跳过到步骤 3
-        setStep(3);
-      }
     } catch (cause) {
-      // 扫描失败不阻断引导，告诉用户可以跳过
       setUnmanagedScanFailed(true);
       setUnmanaged([]);
       setSelectedAdoptIds(new Set());
@@ -1879,7 +1912,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
   async function adoptSelected() {
     const targets = unmanaged.filter((status) => selectedAdoptIds.has(status.id));
     if (!targets.length) {
-      setStep(3);
+      setStep(4);
       return;
     }
     setAdopting(true);
@@ -1898,7 +1931,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
       } else {
         setStepNotice(`已入库 ${report.changed} 个 Skill`);
       }
-      setStep(3);
+      setStep(4);
     } catch (cause) {
       setStepError(`批量入库失败：${cleanErrorMessage(cause)}`);
     } finally {
@@ -1906,8 +1939,10 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     }
   }
 
-  function skipStep2() {
-    setStep(3);
+  function skipExistingSkillStep() {
+    setStep(4);
+    setStepError(null);
+    setStepNotice(null);
   }
 
   async function pickProjectInOnboarding() {
@@ -1930,10 +1965,10 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
   }
 
   useEffect(() => {
-    if (step !== 4 || packageAutoScanStarted) return;
-    setPackageAutoScanStarted(true);
-    void loadSkillPackage(packagePath);
-  }, [packageAutoScanStarted, packagePath, step]);
+    if (step !== 4 || presetAutoScanStarted) return;
+    setPresetAutoScanStarted(true);
+    void loadPresetSkills();
+  }, [presetAutoScanStarted, step]);
 
   useEffect(() => {
     if (!stepError) return undefined;
@@ -1947,43 +1982,26 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     return () => window.clearTimeout(timeoutId);
   }, [stepNotice]);
 
-  async function loadSkillPackage(nextPath: string) {
-    setPackageLoading(true);
+  async function loadPresetSkills() {
+    setPresetLoading(true);
     setStepError(null);
     setStepNotice(null);
     try {
-      const scan = await scanSkillPackage(nextPath);
-      setPackagePath(nextPath);
-      setPackageScan(scan);
-      setSelectedPackageSkillIds(new Set(scan.skills.filter((skill) => !skill.exists).map((skill) => skill.id)));
+      const scan = await scanBuiltinPresetSkills();
+      setPresetScan(scan);
+      setSelectedPresetSkillIds(new Set(scan.skills.filter((skill) => !skill.exists).map((skill) => skill.id)));
     } catch (cause) {
-      setPackageScan(null);
-      setSelectedPackageSkillIds(new Set());
-      setStepError(`无法读取预制 Skill 压缩包：${cleanErrorMessage(cause)}`);
+      setPresetScan(null);
+      setSelectedPresetSkillIds(new Set());
+      setStepError(`预置 Skill 暂时不可用，可以先跳过：${cleanErrorMessage(cause)}`);
     } finally {
-      setPackageLoading(false);
+      setPresetLoading(false);
     }
   }
 
-  async function pickSkillPackageInOnboarding() {
-    setBusy(true);
-    try {
-      const picked = await open({
-        directory: false,
-        multiple: false,
-        title: "选择预制 Skill 压缩包",
-        filters: [{ name: "Zip 压缩包", extensions: ["zip"] }],
-      });
-      if (!picked || Array.isArray(picked)) return;
-      await loadSkillPackage(picked);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function togglePackageSkill(skill: PackageSkill) {
+  function togglePresetSkill(skill: PackageSkill) {
     if (skill.exists) return;
-    setSelectedPackageSkillIds((prev) => {
+    setSelectedPresetSkillIds((prev) => {
       const next = new Set(prev);
       if (next.has(skill.id)) next.delete(skill.id);
       else next.add(skill.id);
@@ -1991,65 +2009,102 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     });
   }
 
-  function togglePackageCategory(category: string, skills: PackageSkill[]) {
-    const selectableIds = skills.filter((skill) => !skill.exists).map((skill) => skill.id);
-    if (!selectableIds.length) return;
-    setSelectedPackageSkillIds((prev) => {
-      const next = new Set(prev);
-      const allSelected = selectableIds.every((id) => next.has(id));
-      for (const id of selectableIds) {
-        if (allSelected) next.delete(id);
-        else next.add(id);
-      }
-      return next;
-    });
-  }
-
-  async function importSelectedPackageSkills() {
-    const skillIds = [...selectedPackageSkillIds];
+  async function installSelectedPresetSkills() {
+    const skillIds = [...selectedPresetSkillIds];
     if (!skillIds.length) {
       await finishOnboarding();
       return;
     }
-    setPackageImporting(true);
+    setPresetInstalling(true);
     setStepError(null);
     setStepNotice(null);
     try {
-      const report = await importSkillsFromPackage(packagePath, skillIds);
-      const installed = packageInstalledCount + report.changed;
-      setPackageInstalledCount(installed);
+      const report = await installBuiltinPresetSkills(skillIds);
+      const installed = presetInstalledCount + report.changed;
+      setPresetInstalledCount(installed);
       if (report.errors.length) {
-        setStepError(`部分预制 Skill 导入失败：${report.errors.slice(0, 3).join("；")}${report.errors.length > 3 ? "…" : ""}`);
-        setStepNotice(`已导入 ${report.changed} 个，跳过 ${report.skipped} 个。可以修复后重试，也可以先完成初始化。`);
-        setSelectedPackageSkillIds(new Set());
-        setPackageScan(null);
+        setStepError(`部分预置 Skill 安装失败：${report.errors.slice(0, 3).join("；")}${report.errors.length > 3 ? "…" : ""}`);
+        setStepNotice(`已安装 ${report.changed} 个，跳过 ${report.skipped} 个。可以先进入工作台。`);
+        setSelectedPresetSkillIds(new Set());
       } else {
         await finishOnboarding(installed);
       }
     } catch (cause) {
-      setStepError(`导入预制 Skill 失败：${cleanErrorMessage(cause)}`);
+      setStepError(`安装预置 Skill 失败：${cleanErrorMessage(cause)}`);
     } finally {
-      setPackageImporting(false);
+      setPresetInstalling(false);
     }
   }
 
   async function finishOnboarding(installedOverride?: number) {
     await onFinished({
-      enabledAgents: selectedAgentIds.size,
+      enabledAgents: enabledAgentCount,
       adoptedSkills: adoptedCount,
       addedProjects: projects.length,
-      installedPackageSkills: installedOverride ?? packageInstalledCount,
+      installedPackageSkills: installedOverride ?? presetInstalledCount,
     });
   }
 
+  if (step === 0) {
+    return (
+      <div className="onboarding-shell welcome" role="main">
+        <ToastViewport
+          items={[
+            ...(stepError ? [{ id: "onboarding-error", tone: "error" as const, text: stepError }] : []),
+            ...(stepNotice ? [{ id: "onboarding-notice", tone: "success" as const, text: stepNotice }] : []),
+          ].slice(0, 2)}
+        />
+        <section className="onboarding-welcome" aria-labelledby="onboarding-welcome-title">
+          <div className="onboarding-welcome-copy">
+            <img src="/app-icon.png" alt="" className="onboarding-welcome-icon" />
+            <h1 id="onboarding-welcome-title">影子</h1>
+            <p>你的本地 Skill 管理专家</p>
+            <button type="button" className="primary-button welcome-start" onClick={() => setStep(1)}>
+              开始探索
+              <ArrowRight size={16} />
+            </button>
+          </div>
+          <div className="shadow-field" aria-hidden="true">
+            <span className="shadow-plane plane-a" />
+            <span className="shadow-plane plane-b" />
+            <span className="shadow-plane plane-c" />
+            <span className="shadow-line line-a" />
+            <span className="shadow-line line-b" />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  const stepMeta = onboardingStepMeta.find((item) => item.id === step)!;
+
   return (
     <div className="onboarding-shell" role="main">
-      <div className="onboarding-card">
-        <header className="onboarding-header">
-          <strong>初始化引导</strong>
-          <span>步骤 {step} / 4</span>
-        </header>
+      <div className="onboarding-flow">
+        <aside className="onboarding-rail" aria-label="初始化进度">
+          <div className="onboarding-rail-brand">
+            <img src="/app-icon.png" alt="" />
+            <strong>影子</strong>
+          </div>
+          <ol>
+            {onboardingStepMeta.map((item) => (
+              <li key={item.id} className={item.id === step ? "active" : item.id < step ? "done" : ""}>
+                <span>{item.id}</span>
+                <div>
+                  <strong>{item.title}</strong>
+                  <small>{item.label}</small>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </aside>
 
+        <main className="onboarding-panel">
+        <header className="onboarding-header">
+          <span>步骤 {step} / 4</span>
+          <h1>{stepMeta.title}</h1>
+          <p>{stepMeta.description}</p>
+        </header>
         <ToastViewport
           items={[
             ...(stepError ? [{ id: "onboarding-error", tone: "error" as const, text: stepError }] : []),
@@ -2059,14 +2114,10 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
 
         {step === 1 ? (
           <section className="onboarding-step">
-            <h2>选择要管理的 Agent</h2>
-            <p className="onboarding-desc">
-              已自动检测本机是否安装 Trae CN、Codex、Claude Code、Aiden。检测到的会默认勾选；未检测到的不勾选，避免之后产生「目录不存在」误报。
-            </p>
             {agentLoading ? (
               <div className="loading-state">
                 <Loader2 className="spin" size={18} />
-                正在探测本机 Agent
+                正在查找本机工具
               </div>
             ) : (
               <div className="onboarding-list">
@@ -2081,7 +2132,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                       />
                       <div className="onboarding-row-main">
                         <strong>{agent.name}</strong>
-                        <small>{agent.exists ? "已检测到目录" : "未检测到目录"}</small>
+                        <small>{agent.exists ? "已找到" : "未找到，可以稍后添加"}</small>
                         <code>{agent.globalPath}</code>
                       </div>
                     </label>
@@ -2090,33 +2141,101 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
               </div>
             )}
             <footer className="onboarding-footer">
+              <span />
+              <div className="onboarding-footer-right">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy || agentLoading}
+                onClick={goToProjectStep}
+              >
+                跳过
+              </button>
               <button
                 type="button"
                 className="primary-button"
                 disabled={busy || agentLoading}
-                onClick={() => void goToStep2()}
+                onClick={() => void continueFromAgentStep()}
               >
-                下一步
+                继续
                 <ArrowRight size={16} />
               </button>
+              </div>
             </footer>
           </section>
         ) : null}
 
         {step === 2 ? (
           <section className="onboarding-step">
-            <h2>处理已有的存量 Skill</h2>
-            <p className="onboarding-desc">
-              在已选 Agent 的目录中发现以下 Skill 还没进入主库。建议默认全部入库，原位置会改成指向主库的软链接。
-            </p>
+            {projects.length ? (
+              <div className="onboarding-list">
+                {projects.map((project) => (
+                  <div key={project.id} className="onboarding-row static">
+                    <FolderKanban size={16} />
+                    <div className="onboarding-row-main">
+                      <strong>{project.name}</strong>
+                      <code>{project.path}</code>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="onboarding-empty">还没有添加项目。可以先跳过，之后在设置里添加。</div>
+            )}
+            <div className="onboarding-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void pickProjectInOnboarding()}
+                disabled={busy}
+              >
+                <FolderPlus size={16} />
+                添加项目
+              </button>
+            </div>
+            <footer className="onboarding-footer">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setStep(1)}
+                disabled={busy}
+              >
+                <ArrowLeft size={16} />
+                上一步
+              </button>
+              <div className="onboarding-footer-right">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void goToExistingSkillStep()}
+                  disabled={busy}
+                >
+                  跳过
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void goToExistingSkillStep()}
+                  disabled={busy}
+                >
+                  继续
+                  <ArrowRight size={16} />
+                </button>
+              </div>
+            </footer>
+          </section>
+        ) : null}
+
+        {step === 3 ? (
+          <section className="onboarding-step">
             {unmanagedLoading ? (
               <div className="loading-state">
                 <Loader2 className="spin" size={18} />
-                正在扫描存量 Skill
+                正在查找已有 Skill
               </div>
             ) : unmanaged.length === 0 ? (
               <div className="onboarding-empty">
-                {unmanagedScanFailed ? "暂时无法扫描存量 Skill，可以先跳过这一步。" : "没有发现需要入库的存量 Skill。"}
+                {unmanagedScanFailed ? "暂时无法查找已有 Skill，可以先跳过。" : "没有发现需要导入的已有 Skill。"}
               </div>
             ) : (
               <div className="onboarding-list">
@@ -2143,7 +2262,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
               <button
                 type="button"
                 className="ghost-button"
-                onClick={() => setStep(1)}
+                onClick={() => setStep(2)}
                 disabled={adopting}
               >
                 <ArrowLeft size={16} />
@@ -2153,7 +2272,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                 <button
                   type="button"
                   className="secondary-button"
-                  onClick={skipStep2}
+                  onClick={skipExistingSkillStep}
                   disabled={adopting}
                 >
                   跳过
@@ -2162,106 +2281,32 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                   type="button"
                   className="primary-button"
                   onClick={() => void adoptSelected()}
-                  disabled={adopting || unmanagedLoading}
+                  disabled={adopting || unmanagedLoading || selectedAdoptIds.size === 0}
                 >
                   {adopting ? <Loader2 className="spin" size={16} /> : <Archive size={16} />}
-                  全部入库（{selectedAdoptIds.size}）
+                  导入已选（{selectedAdoptIds.size}）
                 </button>
               </div>
             </footer>
           </section>
         ) : null}
 
-        {step === 3 ? (
-          <section className="onboarding-step">
-            <h2>添加项目（可选）</h2>
-            <p className="onboarding-desc">
-              想立即把当前正在做的项目纳入管理吗？可以稍后在设置中再添加，跳过不会影响使用。
-            </p>
-            {projects.length ? (
-              <div className="onboarding-list">
-                {projects.map((project) => (
-                  <div key={project.id} className="onboarding-row">
-                    <FolderKanban size={16} />
-                    <div className="onboarding-row-main">
-                      <strong>{project.name}</strong>
-                      <code>{project.path}</code>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="onboarding-empty">还没添加项目。</div>
-            )}
-            <div className="onboarding-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => void pickProjectInOnboarding()}
-                disabled={busy}
-              >
-                <FolderPlus size={16} />
-                选择项目目录
-              </button>
-            </div>
-            <footer className="onboarding-footer">
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => setStep(unmanaged.length ? 2 : 1)}
-                disabled={busy}
-              >
-                <ArrowLeft size={16} />
-                上一步
-              </button>
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() => setStep(4)}
-                disabled={busy}
-              >
-                下一步
-                <ArrowRight size={16} />
-              </button>
-            </footer>
-          </section>
-        ) : null}
-
         {step === 4 ? (
           <section className="onboarding-step">
-            <h2>选择预制 Skill</h2>
-            <p className="onboarding-desc">
-              只读取压缩包里 `skills` 目录下的正式 Skill，不会把插件目录混进来。导入后只进入主库，不会自动分发到 Agent。
-            </p>
-            <div className="package-summary">
-              <div>
-                <span>压缩包</span>
-                <code>{packagePath}</code>
-              </div>
-              <button
-                type="button"
-                className="secondary-button compact"
-                onClick={() => void pickSkillPackageInOnboarding()}
-                disabled={busy || packageLoading || packageImporting}
-              >
-                选择压缩包
-              </button>
-            </div>
-            {packageLoading ? (
+            {presetLoading ? (
               <div className="loading-state">
                 <Loader2 className="spin" size={18} />
-                正在识别预制 Skill
+                正在准备预置 Skill
               </div>
-            ) : packageScan ? (
+            ) : presetScan ? (
               <PackageSkillPicker
-                scan={packageScan}
-                selectedIds={selectedPackageSkillIds}
-                onToggleSkill={togglePackageSkill}
-                onToggleCategory={togglePackageCategory}
+                scan={presetScan}
+                selectedIds={selectedPresetSkillIds}
+                onToggleSkill={togglePresetSkill}
               />
             ) : (
               <div className="onboarding-empty">
-                没有可展示的预制 Skill。可以选择另一个压缩包，或者先跳过。
+                预置 Skill 暂时不可用，可以先跳过。
               </div>
             )}
             <footer className="onboarding-footer">
@@ -2269,7 +2314,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                 type="button"
                 className="ghost-button"
                 onClick={() => setStep(3)}
-                disabled={packageImporting}
+                disabled={presetInstalling}
               >
                 <ArrowLeft size={16} />
                 上一步
@@ -2279,23 +2324,24 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                   type="button"
                   className="secondary-button"
                   onClick={() => void finishOnboarding()}
-                  disabled={packageImporting}
+                  disabled={presetInstalling}
                 >
                   跳过
                 </button>
                 <button
                   type="button"
                   className="primary-button"
-                  onClick={() => void importSelectedPackageSkills()}
-                  disabled={packageImporting || packageLoading || !packageScan}
+                  onClick={() => void installSelectedPresetSkills()}
+                  disabled={presetInstalling || presetLoading || !presetScan || selectedPresetSkillIds.size === 0}
                 >
-                  {packageImporting ? <Loader2 className="spin" size={16} /> : <Archive size={16} />}
-                  导入已勾选（{selectedPackageSkillIds.size}）
+                  {presetInstalling ? <Loader2 className="spin" size={16} /> : <Archive size={16} />}
+                  安装已选（{selectedPresetSkillIds.size}）
                 </button>
               </div>
             </footer>
           </section>
         ) : null}
+        </main>
       </div>
     </div>
   );
@@ -2305,12 +2351,10 @@ function PackageSkillPicker({
   scan,
   selectedIds,
   onToggleSkill,
-  onToggleCategory,
 }: {
   scan: SkillPackageScan;
   selectedIds: Set<string>;
   onToggleSkill: (skill: PackageSkill) => void;
-  onToggleCategory: (category: string, skills: PackageSkill[]) => void;
 }) {
   const grouped = PACKAGE_CATEGORIES.map((category) => ({
     category,
@@ -2321,32 +2365,20 @@ function PackageSkillPicker({
   return (
     <div className="package-picker">
       <div className="package-picker-head">
-        <strong>识别到 {scan.skills.length} 个预制 Skill</strong>
-        <span>
-          可导入 {selectableCount} 个
-          {scan.ignoredPluginSkills ? `，已忽略插件内 ${scan.ignoredPluginSkills} 个` : ""}
-        </span>
+        <strong>找到 {scan.skills.length} 个预置 Skill</strong>
+        <span>{selectableCount} 个可安装</span>
       </div>
       <div className="package-category-list">
         {grouped.map((group) => {
           const selectable = group.skills.filter((skill) => !skill.exists);
           const selectedInGroup = selectable.filter((skill) => selectedIds.has(skill.id)).length;
-          const allSelected = selectable.length > 0 && selectedInGroup === selectable.length;
           return (
             <section key={group.category} className="package-category">
               <header>
                 <div>
                   <h3>{group.category}</h3>
-                  <span>{selectedInGroup} / {selectable.length} 可导入</span>
+                  <span>已选 {selectedInGroup} / 可安装 {selectable.length}</span>
                 </div>
-                <button
-                  type="button"
-                  className="ghost-button compact"
-                  onClick={() => onToggleCategory(group.category, group.skills)}
-                  disabled={!selectable.length}
-                >
-                  {allSelected ? "取消本组" : "选择本组"}
-                </button>
               </header>
               <div className="package-skill-list">
                 {group.skills.map((skill) => {
@@ -2369,10 +2401,9 @@ function PackageSkillPicker({
                       <div className="package-skill-main">
                         <div>
                           <strong>{skill.displayName || skill.name}</strong>
-                          <span>{skill.exists ? "已在主库" : "可导入"}</span>
+                          <span>{skill.exists ? "已安装" : "可安装"}</span>
                         </div>
                         <p>{skill.description || "暂无说明"}</p>
-                        <code>{skill.name}</code>
                       </div>
                     </label>
                   );

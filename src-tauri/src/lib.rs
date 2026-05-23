@@ -13,6 +13,8 @@ pub fn run() {
             commands::import_skill,
             commands::scan_skill_package,
             commands::import_skills_from_package,
+            commands::scan_builtin_preset_skills,
+            commands::install_builtin_preset_skills,
             commands::delete_skill,
             commands::deploy_skill,
             commands::withdraw_skill,

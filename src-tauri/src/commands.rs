@@ -12,6 +12,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use tauri::Manager;
+
+const BUILTIN_PRESET_RESOURCE_DIR: &str = "preset-skills";
 
 #[tauri::command]
 pub fn get_app_state() -> Result<AppState, String> {
@@ -94,6 +97,59 @@ pub fn import_skills_from_package(
                 continue;
             }
             match import_package_skill(&package, &entries, &skill, &target) {
+                Ok(()) => changed += 1,
+                Err(error) => {
+                    if target.exists() {
+                        let _ = remove_path(&target);
+                    }
+                    errors.push(format!("{}：{:#}", skill.display_name, error));
+                }
+            }
+        }
+
+        Ok(PackageImportReport {
+            state: store.load_app_state()?,
+            changed,
+            skipped,
+            errors,
+        })
+    })
+}
+
+#[tauri::command]
+pub fn scan_builtin_preset_skills(app: tauri::AppHandle) -> Result<SkillPackageScan, String> {
+    run(|| {
+        let store = Store::new()?;
+        let root = builtin_preset_skills_dir(&app)?;
+        scan_builtin_preset_skills_internal(&store, &root)
+    })
+}
+
+#[tauri::command]
+pub fn install_builtin_preset_skills(
+    app: tauri::AppHandle,
+    skill_ids: Vec<String>,
+) -> Result<PackageImportReport, String> {
+    run(|| {
+        let store = Store::new()?;
+        let root = builtin_preset_skills_dir(&app)?;
+        let scan = scan_builtin_preset_skills_internal(&store, &root)?;
+        let requested: HashSet<String> = skill_ids.into_iter().collect();
+        let mut changed = 0usize;
+        let mut skipped = 0usize;
+        let mut errors = Vec::new();
+
+        for skill in scan.skills {
+            if !requested.contains(&skill.id) {
+                continue;
+            }
+            let source = root.join(&skill.name);
+            let target = store.skill_path(&skill.id);
+            if target.exists() {
+                skipped += 1;
+                continue;
+            }
+            match import_builtin_preset_skill(&source, &target) {
                 Ok(()) => changed += 1,
                 Err(error) => {
                     if target.exists() {
@@ -650,6 +706,91 @@ fn scan_skill_package_internal(store: &Store, package_path: &str) -> Result<Skil
     })
 }
 
+fn builtin_preset_skills_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
+    let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join(BUILTIN_PRESET_RESOURCE_DIR);
+    if dev_dir.is_dir() {
+        return Ok(dev_dir);
+    }
+
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .context("无法定位应用资源目录")?;
+    let bundled_dir = resource_dir.join(BUILTIN_PRESET_RESOURCE_DIR);
+    if bundled_dir.is_dir() {
+        return Ok(bundled_dir);
+    }
+
+    Err(anyhow!("预置 Skill 暂时不可用，可以先跳过。"))
+}
+
+fn scan_builtin_preset_skills_internal(
+    store: &Store,
+    root: &Path,
+) -> Result<SkillPackageScan> {
+    if !root.is_dir() {
+        return Err(anyhow!("预置 Skill 暂时不可用，可以先跳过。"));
+    }
+
+    let existing_ids: HashSet<String> = store
+        .scan_library_skills()?
+        .into_iter()
+        .map(|skill| skill.id)
+        .collect();
+    let mut skills = Vec::new();
+
+    for entry in fs::read_dir(root).context("无法读取预置 Skill")? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() || !path.join("SKILL.md").exists() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let id = slugify(&name);
+        let content = fs::read_to_string(path.join("SKILL.md"))
+            .with_context(|| format!("无法读取预置 Skill：{}", name))?;
+        let (display_name, description) = package_skill_metadata(&name, &content);
+        skills.push(PackageSkill {
+            id: id.clone(),
+            name: name.clone(),
+            display_name,
+            description,
+            category: package_skill_category(&name).to_string(),
+            entry_prefix: name,
+            exists: existing_ids.contains(&id),
+        });
+    }
+
+    skills.sort_by(|a, b| {
+        package_category_order(&a.category)
+            .cmp(&package_category_order(&b.category))
+            .then(package_skill_order(&a.name).cmp(&package_skill_order(&b.name)))
+            .then(a.display_name.cmp(&b.display_name))
+    });
+
+    Ok(SkillPackageScan {
+        package_path: "builtin".to_string(),
+        skills,
+        ignored_plugin_skills: 0,
+    })
+}
+
+fn import_builtin_preset_skill(source: &Path, target: &Path) -> Result<()> {
+    if !source.join("SKILL.md").exists() {
+        return Err(anyhow!("预置 Skill 缺少 SKILL.md"));
+    }
+    copy_dir_all(source, target)?;
+    if !target.join("SKILL.md").exists() {
+        if target.exists() {
+            remove_path(target)?;
+        }
+        return Err(anyhow!("安装后缺少 SKILL.md"));
+    }
+    Ok(())
+}
+
 fn list_zip_entries(package: &Path) -> Result<Vec<String>> {
     let output = Command::new("unzip")
         .arg("-Z1")
@@ -799,7 +940,7 @@ fn package_skill_category(name: &str) -> &'static str {
         "ug-num-strategy" | "ug-prd-review-jc-style" | "ab-test-setup" | "experiment-ux-guard" => {
             "需求编写"
         }
-        "ui-ux-pro-max" | "design-taste-skill-pack" | "impeccable" => "UI设计",
+        "ui-ux-pro-max" | "design-taste-skill-pack" | "impeccable" => "UI 设计",
         _ => "其他工具",
     }
 }
@@ -808,7 +949,7 @@ fn package_category_order(category: &str) -> usize {
     match category {
         "产品创意" => 0,
         "需求编写" => 1,
-        "UI设计" => 2,
+        "UI 设计" => 2,
         "其他工具" => 3,
         _ => 4,
     }

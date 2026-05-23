@@ -1,0 +1,20 @@
+{
+  "name": "plan-ceo-review",
+  "title_zh": "Plan CEO Review",
+  "version": "1.0.0-zh-universal",
+  "language": "zh-CN",
+  "format": "universal-agent-skill",
+  "entry": "SKILL.md",
+  "compatible_with": [
+    "any-agent-that-can-load-markdown-prompts"
+  ],
+  "dependencies_removed": [
+    "Claude Code slash-command semantics",
+    "AskUserQuestion tool",
+    "gstack/claude telemetry and config scripts",
+    "~/.claude and ~/.gstack path conventions",
+    "git hosting / CLI assumptions",
+    "mandatory shell/file tools"
+  ],
+  "recommended_upstream_skill": "office-hours"
+}
