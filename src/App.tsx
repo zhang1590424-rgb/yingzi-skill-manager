@@ -929,7 +929,7 @@ export default function App() {
       return [{ agentId: selectedAgentId, projectId: null }];
     }
     if (view === "projects" && selectedProjectId) {
-      return state.agents.map((agent) => ({ agentId: agent.id, projectId: selectedProjectId }));
+      return projectDeployTargets(state, selectedProjectId);
     }
     return [];
   }
@@ -3811,47 +3811,69 @@ function DistributionDrawer({
       ? `应用组合：${preset ? presetDisplayName(preset) : ""}`
       : `分发技能：${drawer?.skillIds.length ?? 0} 个`;
 
+  type TargetRowBase = {
+    key: string;
+    label: string;
+    path: string;
+    scope: "global" | "project";
+    targets: DeployTarget[];
+    scopeMissing: boolean;
+  };
+  const enabledAgents = enabledAgentsForDistribution(state);
   const targetRows = [
-    ...state.agents.map((agent) => ({
+    ...enabledAgents.map((agent): TargetRowBase => ({
       key: `global:${agent.id}`,
       label: `${agent.name} / 全局`,
       path: agent.globalPath,
-      target: { agentId: agent.id, projectId: null },
+      scope: "global",
+      targets: [{ agentId: agent.id, projectId: null }],
       scopeMissing: false,
     })),
-    ...state.projects.flatMap((project) =>
-      state.agents.map((agent) => ({
-        key: `project:${project.id}:${agent.id}`,
-        label: `${project.name} / ${agent.name}`,
-        path: `${project.path}/${agent.projectRelativePath}`,
-        target: { agentId: agent.id, projectId: project.id },
-        scopeMissing: !project.exists,
-      })),
-    ),
+    ...state.projects.map((project): TargetRowBase => ({
+      key: `project:${project.id}`,
+      label: `${project.name} / 项目`,
+      path: project.path,
+      scope: "project",
+      targets: enabledAgents.map((agent) => ({ agentId: agent.id, projectId: project.id })),
+      scopeMissing: !project.exists,
+    })),
   ].map((row) => {
     const statuses = drawerSkillIds
-      .map((skillId) => findTargetStatus(state, row.target.agentId, row.target.projectId ?? null, skillId))
+      .flatMap((skillId) =>
+        row.targets
+          .map((target) => findTargetStatus(state, target.agentId, target.projectId ?? null, skillId))
+          .filter((status): status is TargetStatus => Boolean(status))
+      )
       .filter((status): status is TargetStatus => Boolean(status));
     const displayStatuses = statuses.map((status) =>
       status.status === "pathMissing" && !row.scopeMissing
         ? { ...status, status: "disabled" as SkillStatus }
         : status,
     );
-    const statusLabel = summarizeTargetStatuses(displayStatuses, drawerSkillIds.length);
+    const statusLabel = summarizeTargetStatuses(displayStatuses, drawerSkillIds.length * Math.max(row.targets.length, 1));
     const hasOverwriteRisk = statuses.some((status) => isOverwriteRiskStatus(status.status));
     const hasPathMissing = statuses.some((status) => status.status === "pathMissing");
     const hasBlockingPathRisk = row.scopeMissing && hasPathMissing;
     const hasPathRisk = statuses.some((status) => status.status === "broken" || status.status === "invalid")
       || hasBlockingPathRisk;
+    const overwriteRiskCount = statuses.filter((status) => isOverwriteRiskStatus(status.status)).length;
+    const blockingPathRiskCount = row.scopeMissing
+      ? statuses.filter((status) => status.status === "pathMissing").length
+      : 0;
+    const pathRiskCount = statuses.filter((status) => status.status === "broken" || status.status === "invalid").length
+      + blockingPathRiskCount;
     const skillLabel = drawerSkills.length === 1
       ? drawerSkills[0].displayName
       : `${drawerSkillIds.length} 个技能`;
+    const targetPathLabel = row.scope === "project" ? `${row.path}/{agent-skill-root}` : row.path;
     return {
       ...row,
       finalPath: drawerSkills.length === 1
-        ? `${row.path}/${drawerSkills[0].name} -> ${drawerSkills[0].path}`
-        : `${row.path}/{skill-name} -> ${state.skillsRoot}/{skill-name}`,
-      resultLabel: `将 ${skillLabel} 启用到 ${row.label}`,
+        ? `${targetPathLabel}/${drawerSkills[0].name} -> ${drawerSkills[0].path}`
+        : `${targetPathLabel}/{skill-name} -> ${state.skillsRoot}/{skill-name}`,
+      resultLabel: row.scope === "project"
+        ? `将 ${skillLabel} 启用到 ${row.label}下 ${row.targets.length} 个 Agent`
+        : `将 ${skillLabel} 启用到 ${row.label}`,
       riskLabel: hasOverwriteRisk
         ? "需要覆盖目标同名内容"
         : hasBlockingPathRisk
@@ -3863,6 +3885,8 @@ function DistributionDrawer({
       hasOverwriteRisk,
       hasBlockingPathRisk,
       hasPathRisk,
+      overwriteRiskCount,
+      pathRiskCount,
     };
   });
 
@@ -3877,11 +3901,11 @@ function DistributionDrawer({
 
   const targets = targetRows
     .filter((row) => selectedTargets.has(row.key))
-    .map((row) => row.target);
+    .flatMap((row) => row.targets);
 
   const selectedRows = targetRows.filter((row) => selectedTargets.has(row.key));
-  const selectedOverwriteRisks = selectedRows.filter((row) => row.hasOverwriteRisk).length;
-  const selectedPathRisks = selectedRows.filter((row) => row.hasPathRisk).length;
+  const selectedOverwriteRisks = selectedRows.reduce((count, row) => count + row.overwriteRiskCount, 0);
+  const selectedPathRisks = selectedRows.reduce((count, row) => count + row.pathRiskCount, 0);
   const selectedBlockingPathRisks = selectedRows.filter((row) => row.hasBlockingPathRisk).length;
   const shouldOverwrite = selectedOverwriteRisks + selectedPathRisks > 0;
   const selectedRiskCount = selectedOverwriteRisks + selectedPathRisks;
@@ -4715,6 +4739,14 @@ function buildGlobalTransferItems(state: AppState, agentId: string): TransferIte
   return addPresetTransferItems(state, skillItems, [{ agentId, projectId: null }], 1);
 }
 
+function enabledAgentsForDistribution(state: AppState) {
+  return state.agents.filter((agent) => agent.enabled);
+}
+
+function projectDeployTargets(state: AppState, projectId: string): DeployTarget[] {
+  return enabledAgentsForDistribution(state).map((agent) => ({ agentId: agent.id, projectId }));
+}
+
 function buildProjectTransferItems(state: AppState, projectId: string): TransferItem[] {
   const project = state.projects.find((item) => item.id === projectId) ?? null;
   const pathMissingIsBlocking = !project?.exists;
@@ -4727,7 +4759,7 @@ function buildProjectTransferItems(state: AppState, projectId: string): Transfer
       grouped.set(status.skillId, bucket);
     }
   }
-  const targets = state.agents.map((agent) => ({ agentId: agent.id, projectId }));
+  const targets = projectDeployTargets(state, projectId);
   const targetCount = Math.max(targets.length, 1);
   const skillItems = [...grouped.values()]
     .map((statuses) => buildSkillTransferItem(
