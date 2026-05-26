@@ -434,9 +434,11 @@ fn adopt_skill_internal(
     skill_name: &str,
 ) -> Result<()> {
     let agent = store.find_agent(agent_id)?;
+    ensure_agent_enabled(&agent)?;
     let root = if let Some(project_id) = project_id {
         let project = store.find_project(project_id)?;
-        PathBuf::from(project.path).join(agent.project_relative_path)
+        let project_root = ensure_existing_project_root(&project.path)?;
+        project_root.join(agent.project_relative_path)
     } else {
         PathBuf::from(agent.global_path)
     };
@@ -611,7 +613,13 @@ fn deploy_skill_internal(
     }
 
     for target in targets {
-        let target_path = target_skill_path(store, target, skill_id)?;
+        let target_path = match target_skill_path(store, target, skill_id) {
+            Ok(path) => path,
+            Err(error) => {
+                report.errors.push(format!("{:#}", error));
+                continue;
+            }
+        };
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -646,7 +654,13 @@ fn withdraw_skill_internal(
 ) -> Result<()> {
     let skill_path = store.skill_path(skill_id);
     for target in targets {
-        let target_path = target_skill_path(store, target, skill_id)?;
+        let target_path = match target_skill_path(store, target, skill_id) {
+            Ok(path) => path,
+            Err(error) => {
+                report.errors.push(format!("{:#}", error));
+                continue;
+            }
+        };
         if fs::symlink_metadata(&target_path).is_err() {
             report.skipped += 1;
             continue;
@@ -666,13 +680,39 @@ fn withdraw_skill_internal(
 
 fn target_skill_path(store: &Store, target: &DeployTarget, skill_id: &str) -> Result<PathBuf> {
     let agent = store.find_agent(&target.agent_id)?;
+    ensure_agent_enabled(&agent)?;
     let root = if let Some(project_id) = &target.project_id {
         let project = store.find_project(project_id)?;
-        PathBuf::from(project.path).join(agent.project_relative_path)
+        let project_root = ensure_existing_project_root(&project.path)?;
+        project_root.join(agent.project_relative_path)
     } else {
         PathBuf::from(agent.global_path)
     };
     Ok(root.join(skill_id))
+}
+
+fn ensure_agent_enabled(agent: &crate::models::Agent) -> Result<()> {
+    if agent.enabled {
+        return Ok(());
+    }
+    Err(anyhow!("Agent 已停用，不能分发或收回：{}", agent.name))
+}
+
+fn ensure_existing_project_root(project_path: &str) -> Result<PathBuf> {
+    let root = PathBuf::from(project_path);
+    if !root.exists() {
+        return Err(anyhow!(
+            "项目路径不存在，无法进行项目级分发：{}",
+            root.display()
+        ));
+    }
+    if !root.is_dir() {
+        return Err(anyhow!(
+            "项目路径不是文件夹，无法进行项目级分发：{}",
+            root.display()
+        ));
+    }
+    Ok(root)
 }
 
 fn scan_skill_package_internal(store: &Store, package_path: &str) -> Result<SkillPackageScan> {
@@ -1189,4 +1229,121 @@ pub fn resolve_broken_issue_keys(issue_keys: Vec<String>) -> Result<OperationRep
         let store = Store::new()?;
         store.resolve_broken_issue_keys(&issue_keys)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store(name: &str) -> Store {
+        let root =
+            std::env::temp_dir().join(format!("skill-hub-command-{}-{}", name, std::process::id()));
+        if root.exists() {
+            let _ = fs::remove_dir_all(&root);
+        }
+        let store = Store {
+            base_dir: root.clone(),
+            skills_root: root.join("skills"),
+            database_path: root.join("app.db"),
+            config_path: root.join("config.json"),
+        };
+        fs::create_dir_all(&store.skills_root).unwrap();
+        store.ensure_config().unwrap();
+        store.ensure_database().unwrap();
+        store
+    }
+
+    fn insert_agent(store: &Store, id: &str, enabled: bool, project_relative_path: &str) {
+        let conn = store.connection().unwrap();
+        let global_path = store
+            .base_dir
+            .join(format!("{}-global", id))
+            .join("skills")
+            .to_string_lossy()
+            .to_string();
+        conn.execute(
+            "INSERT OR REPLACE INTO agents (id, name, global_path, project_relative_path, enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                id,
+                id,
+                global_path,
+                project_relative_path,
+                if enabled { 1 } else { 0 }
+            ],
+        )
+        .unwrap();
+    }
+
+    fn insert_project(store: &Store, id: &str, path: &Path) {
+        let conn = store.connection().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO projects (id, name, path) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, id, path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+    }
+
+    fn create_library_skill(store: &Store, skill_id: &str) {
+        let skill_path = store.skill_path(skill_id);
+        fs::create_dir_all(&skill_path).unwrap();
+        fs::write(skill_path.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+    }
+
+    #[test]
+    fn deploy_skips_disabled_project_agent_without_creating_skill_root() {
+        let store = temp_store("disabled-project-agent");
+        let project_root = store.base_dir.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        create_library_skill(&store, "demo");
+        insert_agent(&store, "disabled-agent", false, ".disabled-agent/skills");
+        insert_project(&store, "project-1", &project_root);
+
+        let mut report = OperationReport::empty();
+        deploy_skill_internal(
+            &store,
+            "demo",
+            &[DeployTarget {
+                agent_id: "disabled-agent".to_string(),
+                project_id: Some("project-1".to_string()),
+            }],
+            false,
+            &mut report,
+        )
+        .unwrap();
+
+        assert_eq!(report.changed, 0);
+        assert_eq!(report.errors.len(), 1);
+        assert!(!project_root.join(".disabled-agent").exists());
+
+        let _ = fs::remove_dir_all(&store.base_dir);
+    }
+
+    #[test]
+    fn deploy_does_not_create_missing_project_root() {
+        let store = temp_store("missing-project-root");
+        let missing_project = store.base_dir.join("missing-project");
+        create_library_skill(&store, "demo");
+        insert_agent(&store, "enabled-agent", true, ".enabled-agent/skills");
+        insert_project(&store, "project-1", &missing_project);
+
+        let mut report = OperationReport::empty();
+        deploy_skill_internal(
+            &store,
+            "demo",
+            &[DeployTarget {
+                agent_id: "enabled-agent".to_string(),
+                project_id: Some("project-1".to_string()),
+            }],
+            false,
+            &mut report,
+        )
+        .unwrap();
+
+        assert_eq!(report.changed, 0);
+        assert_eq!(report.errors.len(), 1);
+        assert!(!missing_project.exists());
+
+        let _ = fs::remove_dir_all(&store.base_dir);
+    }
 }

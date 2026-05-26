@@ -273,12 +273,8 @@ export default function App() {
       }
       setError(null);
       const next = await getAppState();
-      const nextAgentId = next.agents.some((agent) => agent.id === selectedAgentId)
-        ? selectedAgentId
-        : next.agents[0]?.id ?? selectedAgentId;
-      const nextProjectAgentId = next.agents.some((agent) => agent.id === selectedProjectAgentId)
-        ? selectedProjectAgentId
-        : next.agents[0]?.id ?? selectedProjectAgentId;
+      const nextAgentId = resolveEnabledAgentId(next, selectedAgentId);
+      const nextProjectAgentId = resolveEnabledAgentId(next, selectedProjectAgentId);
       const nextProjectId = resolveProjectId(next, selectedProjectId);
       setState(next);
       setSelectedAgentId(nextAgentId);
@@ -926,7 +922,9 @@ export default function App() {
   function currentTransferTargets() {
     if (!state) return [];
     if (view === "global") {
-      return [{ agentId: selectedAgentId, projectId: null }];
+      return state.agents.some((agent) => agent.id === selectedAgentId && agent.enabled)
+        ? [{ agentId: selectedAgentId, projectId: null }]
+        : [];
     }
     if (view === "projects" && selectedProjectId) {
       return projectDeployTargets(state, selectedProjectId);
@@ -1207,7 +1205,12 @@ export default function App() {
         onToggleAgentEnabled={async (agentId, enabled) => {
           await runAction(async () => {
             const next = await setAgentEnabled(agentId, enabled);
+            const nextAgentId = resolveEnabledAgentId(next, selectedAgentId);
+            const nextProjectAgentId = resolveEnabledAgentId(next, selectedProjectAgentId);
             setState(next);
+            setSelectedAgentId(nextAgentId);
+            setSelectedProjectAgentId(nextProjectAgentId);
+            setSelected(defaultSelectionForView(view, next, nextAgentId, selectedProjectId, nextProjectAgentId));
           }, enabled ? "已启用 Agent" : "已停用 Agent");
         }}
         onRemoveAgent={(agentId) => {
@@ -1221,12 +1224,8 @@ export default function App() {
             onConfirm: async () => {
               return runAction(async () => {
                 const next = await removeAgent(agentId);
-                const nextAgentId = next.agents.some((item) => item.id === selectedAgentId)
-                  ? selectedAgentId
-                  : next.agents[0]?.id ?? selectedAgentId;
-                const nextProjectAgentId = next.agents.some((item) => item.id === selectedProjectAgentId)
-                  ? selectedProjectAgentId
-                  : next.agents[0]?.id ?? selectedProjectAgentId;
+                const nextAgentId = resolveEnabledAgentId(next, selectedAgentId);
+                const nextProjectAgentId = resolveEnabledAgentId(next, selectedProjectAgentId);
                 setState(next);
                 setSelectedAgentId(nextAgentId);
                 setSelectedProjectAgentId(nextProjectAgentId);
@@ -1515,6 +1514,7 @@ export default function App() {
   const shouldMountDetailPane = view === "presets" || view === "library";
   const selectedDetailKey = selected && "id" in selected ? `${selected.type}:${selected.id}` : selected?.type ?? "none";
   const detailPaneKey = `${view}:${selectedDetailKey}`;
+  const sidebarAgents = state ? enabledAgentsForDistribution(state) : [];
 
   if (onboardingCompleted === false) {
     return (
@@ -1572,17 +1572,27 @@ export default function App() {
 
           <div className="nav-section">
             <div className="nav-section-header">我的 Agent</div>
-            {state?.agents.map((agent) => (
+            {sidebarAgents.length ? (
+              sidebarAgents.map((agent) => (
+                <button
+                  key={agent.id}
+                  className={view === "global" && selectedAgentId === agent.id ? "nav-item sub active" : "nav-item sub"}
+                  onClick={() => selectGlobalAgent(agent.id)}
+                  title={agent.globalPath}
+                >
+                  <Globe2 size={16} />
+                  <span>{agent.name}</span>
+                </button>
+              ))
+            ) : (
               <button
-                key={agent.id}
-                className={view === "global" && selectedAgentId === agent.id ? "nav-item sub active" : "nav-item sub"}
-                onClick={() => selectGlobalAgent(agent.id)}
-                title={agent.globalPath}
+                className={view === "settings" ? "nav-item sub active" : "nav-item sub"}
+                onClick={() => selectView("settings")}
               >
                 <Globe2 size={16} />
-                <span>{agent.name}</span>
+                <span>启用 Agent</span>
               </button>
-            ))}
+            )}
           </div>
 
           <div className="nav-section">
@@ -2040,6 +2050,11 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
     goToProjectStep();
   }
 
+  async function skipAgentStep() {
+    if (!(await commitAgentSelection())) return;
+    goToProjectStep();
+  }
+
   async function goToExistingSkillStep() {
     setStep(3);
     setUnmanagedLoading(true);
@@ -2385,7 +2400,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
                 type="button"
                 className="secondary-button"
                 disabled={busy || agentLoading}
-                onClick={goToProjectStep}
+                onClick={() => void skipAgentStep()}
               >
                 跳过
               </button>
@@ -5128,6 +5143,14 @@ function resolveProjectId(state: AppState, currentProjectId: string | null) {
     return currentProjectId;
   }
   return state.projects[0]?.id ?? null;
+}
+
+function resolveEnabledAgentId(state: AppState, currentAgentId: string) {
+  const agents = enabledAgentsForDistribution(state);
+  if (currentAgentId && agents.some((agent) => agent.id === currentAgentId)) {
+    return currentAgentId;
+  }
+  return agents[0]?.id ?? "";
 }
 
 function selectionBelongsToScope(
