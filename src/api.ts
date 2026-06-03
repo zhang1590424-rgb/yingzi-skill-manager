@@ -210,6 +210,13 @@ export async function detectDefaultAgents(): Promise<DetectedAgent[]> {
         projectRelativePath: ".aiden/skills",
         exists: true,
       },
+      {
+        id: "agents",
+        name: "Agents",
+        globalPath: "/Users/mock/.agents/skills",
+        projectRelativePath: ".agents/skills",
+        exists: false,
+      },
     ];
   }
   return invoke<DetectedAgent[]>("detect_default_agents");
@@ -323,6 +330,14 @@ function mockState(..._values: string[]): AppState {
       name: "Aiden",
       globalPath: "/Users/bytedance/.aiden/skills",
       projectRelativePath: ".aiden/skills",
+      enabled: true,
+      pathExists: false,
+    },
+    {
+      id: "agents",
+      name: "Agents",
+      globalPath: "/Users/bytedance/.agents/skills",
+      projectRelativePath: ".agents/skills",
       enabled: true,
       pathExists: false,
     },

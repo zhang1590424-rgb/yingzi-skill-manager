@@ -9,7 +9,7 @@
 核心目标：
 
 - 统一管理本地 Skill 主库。
-- 查看 Trae CN、Codex、Claude Code、Aiden 的全局 Skill 应用状态。
+- 查看 Trae CN、Codex、Claude Code、Aiden、Agents 的全局 Skill 应用状态。
 - 查看手动添加项目中的项目级 Skill 应用状态。
 - 通过软链接把技能列表中的 Skill 分发到不同 Agent 和项目。
 - 通过技能组合把多个 Skill 组织成可批量应用的能力单元。
@@ -60,7 +60,7 @@
 ## Skill 管理规则
 
 - 主库默认路径：`~/.skills-manager/skills`。
-- 默认 Agent 范围：Trae CN、Codex、Claude Code、Aiden；旧版 Trae 不再作为默认 Agent，但仍可在设置页手动添加。
+- 默认 Agent 范围：Trae CN、Codex、Claude Code、Aiden、Agents；旧版 Trae 不再作为默认 Agent，但仍可在设置页手动添加。
 - 所有正式 Skill 以主库为唯一事实源。
 - 导入本地 Skill 时，必须先进入主库，不直接分发到具体 Agent 或项目。
 - 导入 `.zip` 压缩包时，只支持 `.zip` 格式；压缩包可以是单个 Skill，也可以包含多个 Skill 子目录。

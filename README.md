@@ -1,13 +1,13 @@
 # 影子
 
-个人本地 Skill 管理器，用来统一查看和分发 Trae CN、Codex、Claude Code、Aiden 的全局与项目级 Skill。
+个人本地 Skill 管理器，用来统一查看和分发 Trae CN、Codex、Claude Code、Aiden、Agents 的全局与项目级 Skill。
 
 「影子」表示主库中的 Skill 是实体，应用到不同 Agent 或项目时生成可收回、可覆盖、可验证的影子。
 
 ## 当前能力
 
 - 查看 `~/.skills-manager/skills` 中的技能列表。
-- 查看 Trae CN、Codex、Claude Code、Aiden 的全局技能状态。
+- 查看 Trae CN、Codex、Claude Code、Aiden、Agents 的全局技能状态。
 - 手动添加项目，并查看项目级技能状态。
 - 将主库技能通过软链接分发到全局或项目目录。
 - 收回指向主库的软链接，不删除主库技能。
@@ -34,6 +34,7 @@
 | Codex | `~/.codex/skills` | `.codex/skills` |
 | Claude Code | `~/.claude/skills` | `.claude/skills` |
 | Aiden | `~/.aiden/skills` | `.aiden/skills` |
+| Agents | `~/.agents/skills` | `.agents/skills` |
 
 路径可以在应用的「设置」页修改。
 

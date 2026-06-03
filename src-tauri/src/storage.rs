@@ -1126,8 +1126,9 @@ fn score_onboarding_project_dir(path: &Path) -> Option<OnboardingProjectScore> {
         ".claude/skills",
         ".trae-cn/skills",
         ".aiden/skills",
+        ".agents/skills",
     ];
-    let agent_roots = [".codex", ".claude", ".trae-cn", ".aiden"];
+    let agent_roots = [".codex", ".claude", ".trae-cn", ".aiden", ".agents"];
     let rule_files = ["AGENTS.md", "CLAUDE.md"];
     let project_markers = [
         ".git",
@@ -1221,6 +1222,7 @@ fn default_agent_definitions() -> Result<Vec<DetectedAgent>> {
         ("codex", "Codex", ".codex"),
         ("claude-code", "Claude Code", ".claude"),
         ("aiden", "Aiden", ".aiden"),
+        ("agents", "Agents", ".agents"),
     ];
     let mut result = Vec::new();
     for (id, name, root_dir) in entries {
@@ -1362,6 +1364,7 @@ fn infer_agent_id(key: &str) -> String {
         "trae" => "trae".to_string(),
         "claude" | "claude-code" | "claude_code" => "claude-code".to_string(),
         "aiden" => "aiden".to_string(),
+        "agents" => "agents".to_string(),
         _ => slugify(key),
     }
 }
@@ -1373,6 +1376,7 @@ fn infer_agent_name(key: &str) -> String {
         "trae" => "Trae".to_string(),
         "claude" | "claude-code" | "claude_code" => "Claude Code".to_string(),
         "aiden" => "Aiden".to_string(),
+        "agents" => "Agents".to_string(),
         _ => titleize_agent_name(key),
     }
 }
@@ -1773,6 +1777,48 @@ mod tests {
 
         assert!(candidates.iter().any(|candidate| candidate == &project));
         assert!(score.score >= ONBOARDING_PROJECT_RECOMMENDED_SCORE);
+    }
+
+    #[test]
+    fn project_candidate_scan_scores_agents_workspace() {
+        let root = temp_root("agents-candidate");
+        let project = root.join("Projects").join("AgentsProduct");
+        fs::create_dir_all(project.join(".agents").join("skills")).unwrap();
+        fs::write(project.join("package.json"), "{}").unwrap();
+
+        let candidates = collect_onboarding_candidate_dirs(&root);
+        let score = score_onboarding_project_dir(&project).unwrap();
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(candidates.iter().any(|candidate| candidate == &project));
+        assert!(score.score >= ONBOARDING_PROJECT_RECOMMENDED_SCORE);
+    }
+
+    #[test]
+    fn default_agent_definitions_include_agents_directory() {
+        let agents = default_agent_definitions().unwrap();
+        let agents_entry = agents
+            .iter()
+            .find(|agent| agent.id == "agents")
+            .expect("missing Agents default agent");
+
+        assert_eq!(agents_entry.name, "Agents");
+        assert!(agents_entry.global_path.ends_with("/.agents/skills"));
+        assert_eq!(agents_entry.project_relative_path, ".agents/skills");
+    }
+
+    #[test]
+    fn infer_agent_config_supports_agents_directory() {
+        let root = temp_root("infer-agents");
+        let skills_dir = root.join(".agents").join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        let agent = infer_agent_config(&skills_dir).unwrap();
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(agent.id, "agents");
+        assert_eq!(agent.name, "Agents");
+        assert_eq!(agent.project_relative_path, ".agents/skills");
     }
 
     #[test]

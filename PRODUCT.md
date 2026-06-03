@@ -9,7 +9,7 @@
 影子解决三个问题：
 
 - 把本地 Skill 主库作为唯一事实源。
-- 看清 Skill 在 Trae CN、Codex、Claude Code、Aiden 以及手动添加项目中的启用状态。
+- 看清 Skill 在 Trae CN、Codex、Claude Code、Aiden、Agents 以及手动添加项目中的启用状态。
 - 通过软链接把主库 Skill 分发、收回或覆盖到目标位置。
 
 ## 命名隐喻
