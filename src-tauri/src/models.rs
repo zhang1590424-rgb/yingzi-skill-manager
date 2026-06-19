@@ -71,13 +71,11 @@ pub struct TargetStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectAgentWorkspace {
+pub struct ProjectWorkspace {
     pub project_id: String,
     pub project_name: String,
     pub project_path: String,
     pub project_exists: bool,
-    pub agent_id: String,
-    pub agent_name: String,
     pub root_path: String,
     pub root_exists: bool,
     pub statuses: Vec<TargetStatus>,
@@ -113,7 +111,7 @@ pub struct AppState {
     pub projects: Vec<Project>,
     pub skills: Vec<Skill>,
     pub global_workspaces: Vec<AgentWorkspace>,
-    pub project_workspaces: Vec<ProjectAgentWorkspace>,
+    pub project_workspaces: Vec<ProjectWorkspace>,
     pub presets: Vec<Preset>,
     pub issues: Vec<String>,
 }
@@ -121,7 +119,11 @@ pub struct AppState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeployTarget {
-    pub agent_id: String,
+    /// 全局目录维度：指向某个全局目录 id；项目维度可为 None。
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// 项目维度：项目 id；为 None 时表示全局目录维度。
+    #[serde(default)]
     pub project_id: Option<String>,
 }
 
@@ -197,7 +199,8 @@ pub struct DetectedAgent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkAdoptItem {
-    pub agent_id: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
     pub project_id: Option<String>,
     pub skill_name: String,
 }

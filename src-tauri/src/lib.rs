@@ -27,8 +27,6 @@ pub fn run() {
             commands::update_agent_path,
             commands::upsert_preset,
             commands::delete_preset,
-            commands::apply_preset,
-            commands::withdraw_preset,
             commands::open_path,
             commands::get_onboarding_status,
             commands::detect_default_agents,

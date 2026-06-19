@@ -76,13 +76,11 @@ export interface AgentWorkspace {
   statuses: TargetStatus[];
 }
 
-export interface ProjectAgentWorkspace {
+export interface ProjectWorkspace {
   projectId: string;
   projectName: string;
   projectPath: string;
   projectExists: boolean;
-  agentId: string;
-  agentName: string;
   rootPath: string;
   rootExists: boolean;
   statuses: TargetStatus[];
@@ -104,13 +102,13 @@ export interface AppState {
   projects: Project[];
   skills: Skill[];
   globalWorkspaces: AgentWorkspace[];
-  projectWorkspaces: ProjectAgentWorkspace[];
+  projectWorkspaces: ProjectWorkspace[];
   presets: Preset[];
   issues: string[];
 }
 
 export interface DeployTarget {
-  agentId: string;
+  agentId?: string | null;
   projectId?: string | null;
 }
 
@@ -134,7 +132,7 @@ export interface DetectedAgent {
 }
 
 export interface BulkAdoptItem {
-  agentId: string;
+  agentId?: string | null;
   projectId?: string | null;
   skillName: string;
 }

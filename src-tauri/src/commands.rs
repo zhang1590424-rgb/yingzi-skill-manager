@@ -416,32 +416,28 @@ pub fn withdraw_skill(
 
 #[tauri::command]
 pub fn adopt_skill_from_target(
-    agent_id: String,
+    agent_id: Option<String>,
     project_id: Option<String>,
     skill_name: String,
 ) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
-        adopt_skill_internal(&store, &agent_id, project_id.as_deref(), &skill_name)?;
+        adopt_skill_internal(&store, agent_id.as_deref(), project_id.as_deref(), &skill_name)?;
         store.load_app_state()
     })
 }
 
 fn adopt_skill_internal(
     store: &Store,
-    agent_id: &str,
+    agent_id: Option<&str>,
     project_id: Option<&str>,
     skill_name: &str,
 ) -> Result<()> {
-    let agent = store.find_agent(agent_id)?;
-    ensure_agent_enabled(&agent)?;
-    let root = if let Some(project_id) = project_id {
-        let project = store.find_project(project_id)?;
-        let project_root = ensure_existing_project_root(&project.path)?;
-        project_root.join(agent.project_relative_path)
-    } else {
-        PathBuf::from(agent.global_path)
+    let target = DeployTarget {
+        agent_id: agent_id.map(|value| value.to_string()),
+        project_id: project_id.map(|value| value.to_string()),
     };
+    let root = resolve_target_root(store, &target)?;
     let source = root.join(skill_name);
     if !source.exists() && fs::symlink_metadata(&source).is_err() {
         return Err(anyhow!("目标技能不存在：{}", source.display()));
@@ -541,39 +537,6 @@ pub fn delete_preset(id: String) -> Result<AppState, String> {
         let store = Store::new()?;
         store.delete_preset(&id)?;
         store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn apply_preset(
-    preset_id: String,
-    targets: Vec<DeployTarget>,
-    overwrite: bool,
-) -> Result<OperationReport, String> {
-    run(|| {
-        let store = Store::new()?;
-        let preset = store.find_preset(&preset_id)?;
-        let mut report = OperationReport::empty();
-        for skill_id in preset.skill_ids {
-            deploy_skill_internal(&store, &skill_id, &targets, overwrite, &mut report)?;
-        }
-        Ok(report)
-    })
-}
-
-#[tauri::command]
-pub fn withdraw_preset(
-    preset_id: String,
-    targets: Vec<DeployTarget>,
-) -> Result<OperationReport, String> {
-    run(|| {
-        let store = Store::new()?;
-        let preset = store.find_preset(&preset_id)?;
-        let mut report = OperationReport::empty();
-        for skill_id in preset.skill_ids {
-            withdraw_skill_internal(&store, &skill_id, &targets, &mut report)?;
-        }
-        Ok(report)
     })
 }
 
@@ -679,23 +642,32 @@ fn withdraw_skill_internal(
 }
 
 fn target_skill_path(store: &Store, target: &DeployTarget, skill_id: &str) -> Result<PathBuf> {
-    let agent = store.find_agent(&target.agent_id)?;
-    ensure_agent_enabled(&agent)?;
-    let root = if let Some(project_id) = &target.project_id {
+    Ok(resolve_target_root(store, target)?.join(skill_id))
+}
+
+/// 解析分发目标的根目录：
+/// - 项目维度（`project_id` 非空）：固定 `<项目根>/.agents/skills`，不再区分全局目录。
+/// - 全局维度：使用 `agent_id` 指向的全局目录。
+fn resolve_target_root(store: &Store, target: &DeployTarget) -> Result<PathBuf> {
+    if let Some(project_id) = &target.project_id {
         let project = store.find_project(project_id)?;
         let project_root = ensure_existing_project_root(&project.path)?;
-        project_root.join(agent.project_relative_path)
-    } else {
-        PathBuf::from(agent.global_path)
-    };
-    Ok(root.join(skill_id))
+        return Ok(project_root.join(crate::storage::PROJECT_SKILLS_RELATIVE));
+    }
+    let agent_id = target
+        .agent_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("缺少全局目录标识"))?;
+    let agent = store.find_agent(agent_id)?;
+    ensure_agent_enabled(&agent)?;
+    Ok(PathBuf::from(agent.global_path))
 }
 
 fn ensure_agent_enabled(agent: &crate::models::Agent) -> Result<()> {
     if agent.enabled {
         return Ok(());
     }
-    Err(anyhow!("Agent 已停用，不能分发或收回：{}", agent.name))
+    Err(anyhow!("全局目录已停用，不能分发或收回：{}", agent.name))
 }
 
 fn ensure_existing_project_root(project_path: &str) -> Result<PathBuf> {
@@ -1197,7 +1169,7 @@ pub fn bulk_adopt_skills(items: Vec<BulkAdoptItem>) -> Result<BulkAdoptReport, S
         for item in items {
             match adopt_skill_internal(
                 &store,
-                &item.agent_id,
+                item.agent_id.as_deref(),
                 item.project_id.as_deref(),
                 &item.skill_name,
             ) {

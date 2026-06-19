@@ -1,6 +1,6 @@
 use crate::models::{
     Agent, AgentWorkspace, AppState, DetectedAgent, OnboardingStatus, Preset, Project,
-    ProjectAgentWorkspace, ProjectSuggestion, Skill, SkillStatus, TargetKind, TargetStatus,
+    ProjectSuggestion, ProjectWorkspace, Skill, SkillStatus, TargetKind, TargetStatus,
 };
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
@@ -26,6 +26,15 @@ struct InferredAgentConfig {
 }
 
 const DEFAULT_AGENT_MIGRATION_KEY: &str = "default_agents_trae_cn_aiden_migrated";
+const GLOBAL_DIR_CONSOLIDATION_KEY: &str = "global_dirs_consolidated_to_agents";
+/// 项目级技能统一分发到该相对目录，不再按 Agent 区分。
+pub const PROJECT_SKILLS_RELATIVE: &str = ".agents/skills";
+const DEFAULT_GLOBAL_DIR_ID: &str = "agents";
+const DEFAULT_GLOBAL_DIR_NAME: &str = "全局目录";
+const PROJECT_TARGET_LABEL: &str = "项目目录";
+/// 旧版按 Agent 区分时自动写入的默认目录 id，合并后从管理列表清理（不动真实文件）。
+const LEGACY_DEFAULT_GLOBAL_DIR_IDS: [&str; 5] =
+    ["codex", "claude-code", "trae-cn", "trae", "aiden"];
 const ONBOARDING_PROJECT_SCAN_LIMIT: usize = 200;
 const ONBOARDING_PROJECT_RETURN_LIMIT: usize = 8;
 const ONBOARDING_PROJECT_SCORE_THRESHOLD: usize = 24;
@@ -121,6 +130,8 @@ impl Store {
 
         sync_default_agents(&conn)?;
 
+        consolidate_global_dirs(&conn)?;
+
         Ok(())
     }
 
@@ -165,38 +176,24 @@ impl Store {
         }
 
         for project in &projects {
-            for agent in &agents {
-                if !agent.enabled {
-                    continue;
+            let root = PathBuf::from(&project.path).join(PROJECT_SKILLS_RELATIVE);
+            let statuses = match self.scan_project_root(&skills, &root, project) {
+                Ok(value) => value,
+                Err(error) => {
+                    extra_issues.push(format!("项目 {}：{:#}", project.name, error));
+                    Vec::new()
                 }
-                let root = PathBuf::from(&project.path).join(&agent.project_relative_path);
-                let statuses = match self.scan_target_root(
-                    &skills,
-                    &root,
-                    TargetKind::Project,
-                    agent,
-                    Some(project),
-                ) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        extra_issues
-                            .push(format!("{} / {}：{:#}", agent.name, project.name, error));
-                        Vec::new()
-                    }
-                };
-                all_statuses.extend(statuses.clone());
-                project_workspaces.push(ProjectAgentWorkspace {
-                    project_id: project.id.clone(),
-                    project_name: project.name.clone(),
-                    project_path: project.path.clone(),
-                    project_exists: Path::new(&project.path).exists(),
-                    agent_id: agent.id.clone(),
-                    agent_name: agent.name.clone(),
-                    root_path: root.to_string_lossy().to_string(),
-                    root_exists: root.exists(),
-                    statuses,
-                });
-            }
+            };
+            all_statuses.extend(statuses.clone());
+            project_workspaces.push(ProjectWorkspace {
+                project_id: project.id.clone(),
+                project_name: project.name.clone(),
+                project_path: project.path.clone(),
+                project_exists: Path::new(&project.path).exists(),
+                root_path: root.to_string_lossy().to_string(),
+                root_exists: root.exists(),
+                statuses,
+            });
         }
 
         let mut enabled_counts: HashMap<String, usize> = HashMap::new();
@@ -424,6 +421,24 @@ impl Store {
 
         skills.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         Ok(skills)
+    }
+
+    pub fn scan_project_root(
+        &self,
+        skills: &[Skill],
+        root: &Path,
+        project: &Project,
+    ) -> Result<Vec<TargetStatus>> {
+        // 项目维度不再区分 Agent，统一用一个合成目标身份扫描 `.agents/skills`。
+        let synthetic = Agent {
+            id: "project".to_string(),
+            name: PROJECT_TARGET_LABEL.to_string(),
+            global_path: String::new(),
+            project_relative_path: PROJECT_SKILLS_RELATIVE.to_string(),
+            enabled: true,
+            path_exists: root.exists(),
+        };
+        self.scan_target_root(skills, root, TargetKind::Project, &synthetic, Some(project))
     }
 
     pub fn scan_target_root(
@@ -823,13 +838,13 @@ impl Store {
 
     pub fn remove_agent(&self, agent_id: &str) -> Result<()> {
         let conn = self.connection()?;
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
-        if count <= 1 {
-            return Err(anyhow!("至少需要保留一个 Agent"));
+        // 默认全局目录是收敛后的唯一标准目标，不允许移除。
+        if agent_id == DEFAULT_GLOBAL_DIR_ID {
+            return Err(anyhow!("默认全局目录不能移除"));
         }
         let changed = conn.execute("DELETE FROM agents WHERE id = ?1", params![agent_id])?;
         if changed == 0 {
-            return Err(anyhow!("未找到智能体应用：{}", agent_id));
+            return Err(anyhow!("未找到全局目录：{}", agent_id));
         }
         Ok(())
     }
@@ -920,13 +935,6 @@ impl Store {
             .ok_or_else(|| anyhow!("未找到项目：{}", project_id))
     }
 
-    pub fn find_preset(&self, preset_id: &str) -> Result<Preset> {
-        self.load_presets()?
-            .into_iter()
-            .find(|preset| preset.id == preset_id)
-            .ok_or_else(|| anyhow!("未找到技能组合：{}", preset_id))
-    }
-
     pub fn detect_default_agents(&self) -> Result<Vec<DetectedAgent>> {
         default_agent_definitions()
     }
@@ -988,26 +996,20 @@ impl Store {
                     }
                 }
             }
+        }
 
-            for project in &projects {
-                if !Path::new(&project.path).exists() {
-                    continue;
-                }
-                let root = PathBuf::from(&project.path).join(&agent.project_relative_path);
-                if !root.exists() {
-                    continue;
-                }
-                let statuses = self.scan_target_root(
-                    &skills,
-                    &root,
-                    TargetKind::Project,
-                    agent,
-                    Some(project),
-                )?;
-                for status in statuses {
-                    if is_importable_unmanaged_status(&status) {
-                        result.push(status);
-                    }
+        for project in &projects {
+            if !Path::new(&project.path).exists() {
+                continue;
+            }
+            let root = PathBuf::from(&project.path).join(PROJECT_SKILLS_RELATIVE);
+            if !root.exists() {
+                continue;
+            }
+            let statuses = self.scan_project_root(&skills, &root, project)?;
+            for status in statuses {
+                if is_importable_unmanaged_status(&status) {
+                    result.push(status);
                 }
             }
         }
@@ -1217,42 +1219,35 @@ fn is_importable_unmanaged_status(status: &TargetStatus) -> bool {
 
 fn default_agent_definitions() -> Result<Vec<DetectedAgent>> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
-    let entries = vec![
-        ("trae-cn", "Trae CN", ".trae-cn"),
-        ("codex", "Codex", ".codex"),
-        ("claude-code", "Claude Code", ".claude"),
-        ("aiden", "Aiden", ".aiden"),
-        ("agents", "Agents", ".agents"),
-    ];
-    let mut result = Vec::new();
-    for (id, name, root_dir) in entries {
-        let agent_root = home.join(root_dir);
-        let global_path = agent_root.join("skills");
-        let project_relative_path = format!("{}/skills", root_dir);
-        let exists = agent_root.exists() || global_path.exists();
-        result.push(DetectedAgent {
-            id: id.to_string(),
-            name: name.to_string(),
-            global_path: global_path.to_string_lossy().to_string(),
-            project_relative_path,
-            exists,
-        });
-    }
-    Ok(result)
+    // 收敛后只保留一个默认全局目录 `~/.agents/skills`，高级用户可在设置页手动添加其他目录。
+    let agents_root = home.join(".agents");
+    let global_path = agents_root.join("skills");
+    let exists = agents_root.exists() || global_path.exists();
+    Ok(vec![DetectedAgent {
+        id: DEFAULT_GLOBAL_DIR_ID.to_string(),
+        name: DEFAULT_GLOBAL_DIR_NAME.to_string(),
+        global_path: global_path.to_string_lossy().to_string(),
+        project_relative_path: PROJECT_SKILLS_RELATIVE.to_string(),
+        exists,
+    }])
 }
 
 fn sync_default_agents(conn: &Connection) -> Result<()> {
     for detected in default_agent_definitions()? {
-        let enabled_value = if detected.exists { 1 } else { 0 };
+        // 默认全局目录始终启用：它是收敛后的唯一标准目标，即便尚未创建也应保留为可分发位置。
         conn.execute(
-            "INSERT OR IGNORE INTO agents (id, name, global_path, project_relative_path, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO agents (id, name, global_path, project_relative_path, enabled)
+             VALUES (?1, ?2, ?3, ?4, 1)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               global_path = excluded.global_path,
+               project_relative_path = excluded.project_relative_path,
+               enabled = 1",
             params![
                 detected.id,
                 detected.name,
                 detected.global_path,
                 detected.project_relative_path,
-                enabled_value
             ],
         )?;
     }
@@ -1264,6 +1259,31 @@ fn sync_default_agents(conn: &Connection) -> Result<()> {
             params![DEFAULT_AGENT_MIGRATION_KEY],
         )?;
     }
+    Ok(())
+}
+
+/// 把旧版「多 Agent 全局目录」收敛为单一默认全局目录：
+/// 一次性清理旧的默认 Agent 条目（codex/claude-code/trae-cn/trae/aiden），只动管理列表，不碰真实文件。
+/// 用户手动添加的其他全局目录保留。
+fn consolidate_global_dirs(conn: &Connection) -> Result<()> {
+    let already: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![GLOBAL_DIR_CONSOLIDATION_KEY],
+            |row| row.get(0),
+        )
+        .ok();
+    if matches!(already.as_deref(), Some("true")) {
+        return Ok(());
+    }
+    for legacy_id in LEGACY_DEFAULT_GLOBAL_DIR_IDS {
+        conn.execute("DELETE FROM agents WHERE id = ?1", params![legacy_id])?;
+    }
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, 'true')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![GLOBAL_DIR_CONSOLIDATION_KEY],
+    )?;
     Ok(())
 }
 
@@ -1795,16 +1815,14 @@ mod tests {
     }
 
     #[test]
-    fn default_agent_definitions_include_agents_directory() {
+    fn default_agent_definitions_is_single_agents_directory() {
         let agents = default_agent_definitions().unwrap();
-        let agents_entry = agents
-            .iter()
-            .find(|agent| agent.id == "agents")
-            .expect("missing Agents default agent");
+        assert_eq!(agents.len(), 1);
+        let entry = &agents[0];
 
-        assert_eq!(agents_entry.name, "Agents");
-        assert!(agents_entry.global_path.ends_with("/.agents/skills"));
-        assert_eq!(agents_entry.project_relative_path, ".agents/skills");
+        assert_eq!(entry.id, "agents");
+        assert!(entry.global_path.ends_with("/.agents/skills"));
+        assert_eq!(entry.project_relative_path, ".agents/skills");
     }
 
     #[test]

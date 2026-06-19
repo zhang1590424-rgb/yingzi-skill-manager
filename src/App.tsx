@@ -365,13 +365,12 @@ export default function App() {
     }
     if (view === "projects") {
       return status.targetKind === "project" &&
-        status.projectId === selectedProjectId &&
-        status.agentId === selectedProjectAgentId
+        status.projectId === selectedProjectId
         ? status
         : null;
     }
     return null;
-  }, [allStatuses, selected, selectedAgentId, selectedProjectAgentId, selectedProjectId, view]);
+  }, [allStatuses, selected, selectedAgentId, selectedProjectId, view]);
 
   const selectedPreset = useMemo(() => {
     if (!state || view !== "presets" || selected?.type !== "preset") return null;
@@ -407,9 +406,7 @@ export default function App() {
     (workspace) => workspace.projectId === selectedProjectId,
   ) ?? [];
 
-  const projectWorkspace = projectWorkspaces.find(
-    (workspace) => workspace.agentId === selectedProjectAgentId,
-  );
+  const projectWorkspace = projectWorkspaces[0];
 
   const transferItems = useMemo(() => {
     if (!state) return [];
@@ -796,23 +793,23 @@ export default function App() {
   }
 
   async function pickAndAddAgent() {
-    const picked = await open({ directory: true, multiple: false, title: "选择 Agent 全局 Skill 目录" });
+    const picked = await open({ directory: true, multiple: false, title: "选择全局 Skill 目录" });
     if (!picked || Array.isArray(picked)) return;
     await runAction(async () => {
       const next = await addAgent(picked);
       setState(next);
       const agent = next.agents.find((item) => item.globalPath === picked);
       if (agent) setSelectedAgentId(agent.id);
-    }, "已添加 Agent");
+    }, "已添加全局目录");
   }
 
   async function pickAndUpdateAgent(agentId: string) {
-    const picked = await open({ directory: true, multiple: false, title: "选择 Agent 全局 Skill 目录" });
+    const picked = await open({ directory: true, multiple: false, title: "选择全局 Skill 目录" });
     if (!picked || Array.isArray(picked)) return;
     await runAction(async () => {
       const next = await updateAgentPath(agentId, picked);
       setState(next);
-    }, "已更新 Agent 目录");
+    }, "已更新全局目录");
   }
 
   function adoptStatuses(statuses: TargetStatus[]) {
@@ -957,7 +954,7 @@ export default function App() {
           const report = await deploySkill(skillId, targets, hasOverwriteRisk);
           combined = mergeReport(combined, report);
         }
-        return refreshAfterReport(combined, view === "projects" ? "已应用到项目" : "已应用到 Agent", surface);
+        return refreshAfterReport(combined, view === "projects" ? "已应用到项目" : "已应用到全局目录", surface);
       }, undefined, surface);
     };
     if (hasOverwriteRisk || hasMissingMembers) {
@@ -969,7 +966,7 @@ export default function App() {
       setConfirmDialog({
         title: `${hasOverwriteRisk ? "用技能列表覆盖" : "应用可用成员"}：${item.displayName}`,
         message: view === "projects"
-          ? `会影响当前项目下 ${targets.length} 个 Agent，其中 ${riskyStatuses.length} 个位置存在覆盖风险。`
+          ? `会写入当前项目的 .agents/skills，其中 ${riskyStatuses.length} 个位置存在覆盖风险。`
           : hasOverwriteRisk
             ? "目标位置已有同名内容，确认后会按技能列表版本重建软链接。"
             : "这个技能组合有成员缺失，确认后只应用当前仍存在的成员。",
@@ -1002,7 +999,7 @@ export default function App() {
         const report = await withdrawSkill(skillId, targets);
         combined = mergeReport(combined, report);
       }
-      await refreshAfterReport(combined, view === "projects" ? "已从项目收回" : "已从 Agent 收回");
+      await refreshAfterReport(combined, view === "projects" ? "已从项目收回" : "已从全局目录收回");
     });
   }
 
@@ -1012,6 +1009,20 @@ export default function App() {
       return;
     }
     await withdrawTransferItem(item);
+  }
+
+  function selectPresetMembers(preset: Preset) {
+    if (!state) return;
+    const memberIds = existingPresetSkillIds(state, preset.id);
+    if (!memberIds.length) {
+      setError("这个组合没有可选中的成员");
+      return;
+    }
+    setCheckedSkillIds(new Set(memberIds));
+    setView("library");
+    setStatusFilter("all");
+    setSelected(null);
+    setNotice(`已选中「${presetDisplayName(preset)}」的 ${memberIds.length} 个成员，可在技能列表批量分发`);
   }
 
   function toggleChecked(skillId: string) {
@@ -1035,7 +1046,7 @@ export default function App() {
           <EmptyGuidance
             illustration={EMPTY_STATE_ILLUSTRATIONS.skills}
             title="导入第一个技能"
-            description="导入后会进入本地技能列表，之后可以按需应用到我的 Agent 或我的项目。"
+            description="导入后会进入本地技能列表，之后可以按需应用到全局目录或我的项目。"
             action="导入技能"
             actionIcon={<Upload size={16} />}
             onAction={() => setImportSkillOpen(true)}
@@ -1063,7 +1074,7 @@ export default function App() {
             emptyTitle={state.skills.length ? "没有匹配的技能" : "技能列表里还没有技能"}
             emptyDescription={state.skills.length
               ? "换个关键词，或清除筛选后再看全部技能。"
-              : "先导入一个包含 SKILL.md 的文件夹。导入只进入主库，不会自动应用到 Agent。"}
+              : "先导入一个包含 SKILL.md 的文件夹。导入只进入主库，不会自动应用到全局目录。"}
             emptyAction={state.skills.length ? undefined : "导入技能"}
             emptyOnAction={state.skills.length ? undefined : () => setImportSkillOpen(true)}
           />
@@ -1077,7 +1088,7 @@ export default function App() {
           <EmptyGuidance
             illustration={EMPTY_STATE_ILLUSTRATIONS.agents}
             title="先导入可应用的技能"
-            description="导入后，这里会显示未应用和已应用的 Skill，你可以把技能连接到当前 Agent。"
+            description="导入后，这里会显示未应用和已应用的 Skill，你可以把技能连接到当前全局目录。"
             action="导入技能"
             actionIcon={<Upload size={16} />}
             onAction={() => setImportSkillOpen(true)}
@@ -1117,7 +1128,7 @@ export default function App() {
           <EmptyGuidance
             illustration={EMPTY_STATE_ILLUSTRATIONS.projects}
             title="添加第一个项目"
-            description="添加后可以按项目查看各 Agent 的 Skill 应用状态，并把技能应用到项目目录。"
+            description="添加后可以按项目查看 Skill 在 .agents/skills 的应用状态，并把技能应用到项目目录。"
             action="添加项目"
             actionIcon={<FolderPlus size={16} />}
             onAction={pickAndAddProject}
@@ -1129,7 +1140,7 @@ export default function App() {
           <EmptyGuidance
             illustration={EMPTY_STATE_ILLUSTRATIONS.projects}
             title="这个项目还没有可应用的技能"
-            description="先导入一个包含 SKILL.md 的技能，再把它应用到这个项目下的 Agent。"
+            description="先导入一个包含 SKILL.md 的技能，再把它应用到这个项目的 .agents/skills 目录。"
             action="导入技能"
             actionIcon={<Upload size={16} />}
             onAction={() => setImportSkillOpen(true)}
@@ -1171,7 +1182,7 @@ export default function App() {
           skills={state.skills}
           selectedId={selected?.type === "preset" ? selected.id : null}
           onSelect={(preset) => setSelected({ type: "preset", id: preset.id })}
-          onApply={(preset) => setDrawer({ type: "preset", presetId: preset.id })}
+          onApply={(preset) => selectPresetMembers(preset)}
           onEdit={(preset) =>
             setPresetDraft({
               id: preset.id,
@@ -1211,14 +1222,14 @@ export default function App() {
             setSelectedAgentId(nextAgentId);
             setSelectedProjectAgentId(nextProjectAgentId);
             setSelected(defaultSelectionForView(view, next, nextAgentId, selectedProjectId, nextProjectAgentId));
-          }, enabled ? "已启用 Agent" : "已停用 Agent");
+          }, enabled ? "已启用全局目录" : "已停用全局目录");
         }}
         onRemoveAgent={(agentId) => {
           const agent = state.agents.find((item) => item.id === agentId);
           setConfirmDialog({
-            title: `移除 Agent：${agent?.name ?? agentId}`,
+            title: `移除全局目录：${agent?.name ?? agentId}`,
             message: "只会从影子的管理列表移除，不会删除真实目录，也不会删除已经存在的 Skill。",
-            details: agent ? [agent.globalPath, `项目目录规则：<项目根目录>/${agent.projectRelativePath}`] : undefined,
+            details: agent ? [agent.globalPath] : undefined,
             confirmLabel: "确认移除",
             tone: "warn",
             onConfirm: async () => {
@@ -1230,7 +1241,7 @@ export default function App() {
                 setSelectedAgentId(nextAgentId);
                 setSelectedProjectAgentId(nextProjectAgentId);
                 setSelected(defaultSelectionForView(view, next, nextAgentId, selectedProjectId, nextProjectAgentId));
-              }, "已移除 Agent", "overlay");
+              }, "已移除全局目录", "overlay");
             },
           });
         }}
@@ -1274,11 +1285,11 @@ export default function App() {
         <ContextPanel title={transferItem.displayName}>
           <StatusPill status={transferItem.status} />
           <p className="description">{transferItem.description || "暂无描述"}</p>
-          <KeyValue label="当前对象" value={view === "projects" ? selectedProject?.name ?? "项目" : selectedAgent?.name ?? "Agent"} />
+          <KeyValue label="当前对象" value={view === "projects" ? selectedProject?.name ?? "项目" : selectedAgent?.name ?? "全局目录"} />
           <KeyValue
             label="应用范围"
             value={view === "projects"
-              ? `${transferItem.enabledCount}/${transferItem.targetCount} 个 Agent 已应用`
+              ? `${selectedProject?.path ?? "项目"}/.agents/skills`
               : selectedAgent?.globalPath ?? "全局"}
           />
           <TransferStatusDetails item={transferItem} />
@@ -1332,7 +1343,7 @@ export default function App() {
 
     if (view === "global" || view === "projects") {
       return (
-        <ContextPanel title={view === "global" ? selectedAgent?.name ?? "我的 Agent" : selectedProject?.name ?? "我的项目"}>
+        <ContextPanel title={view === "global" ? selectedAgent?.name ?? "全局目录" : selectedProject?.name ?? "我的项目"}>
           <EmptyState
             title={view === "projects" && !selectedProjectId
               ? "还没有纳入管理的项目"
@@ -1371,15 +1382,15 @@ export default function App() {
             </DetailBadge>
           </div>
           <p className="description">{selectedPreset.description || skillNames(selectedPreset, state.skills) || "暂无描述"}</p>
-          {!canApplyPreset ? <InlineWarning text="这个组合没有可用成员。下一步：编辑组合，至少选择一个仍在技能列表里的技能。" /> : null}
+          {!canApplyPreset ? <InlineWarning text="这个组合没有可选中的成员。下一步：编辑组合，至少选择一个仍在技能列表里的技能。" /> : null}
           <div className="detail-actions">
             <button
               className="primary-button"
               disabled={!canApplyPreset}
-              onClick={() => setDrawer({ type: "preset", presetId: selectedPreset.id })}
+              onClick={() => selectPresetMembers(selectedPreset)}
             >
               <Link2 size={16} />
-              应用组合
+              选中全部成员
             </button>
             <button
               className="icon-button"
@@ -1416,7 +1427,7 @@ export default function App() {
           <DetailSection title="成员清单">
             <PresetMemberList members={presetMembers} />
           </DetailSection>
-          <p className="muted-text preset-rule-note">组合本身不会被软链接；应用或收回组合时，只批量处理成员 Skill。</p>
+          <p className="muted-text preset-rule-note">组合本身不会被软链接；它只是一个选择器，「选中全部成员」会把成员勾入技能列表的选择集，由单技能各自应用或收回。</p>
         </ContextPanel>
       );
     }
@@ -1447,8 +1458,8 @@ export default function App() {
                 </button>
                 <button
                   className="icon-button"
-                  aria-label="查看我的 Agent"
-                  title="查看我的 Agent"
+                  aria-label="查看全局目录"
+                  title="查看全局目录"
                   onClick={() => setView("global")}
                 >
                   <Globe2 size={16} />
@@ -1526,7 +1537,7 @@ export default function App() {
             setOnboardingCompletedState(true);
             setView("library");
             const noticeParts: string[] = [];
-            noticeParts.push(`${summary.enabledAgents} 个 Agent`);
+            noticeParts.push(`${summary.enabledAgents} 个全局目录`);
             if (summary.adoptedSkills > 0) noticeParts.push(`${summary.adoptedSkills} 个 Skill 入库`);
             if (summary.installedPackageSkills > 0) noticeParts.push(`${summary.installedPackageSkills} 个预置 Skill`);
             if (summary.addedProjects > 0) noticeParts.push(`${summary.addedProjects} 个项目`);
@@ -1571,7 +1582,7 @@ export default function App() {
           </button>
 
           <div className="nav-section">
-            <div className="nav-section-header">我的 Agent</div>
+            <div className="nav-section-header">全局目录</div>
             {sidebarAgents.length ? (
               sidebarAgents.map((agent) => (
                 <button
@@ -1590,7 +1601,7 @@ export default function App() {
                 onClick={() => selectView("settings")}
               >
                 <Globe2 size={16} />
-                <span>启用 Agent</span>
+                <span>添加全局目录</span>
               </button>
             )}
           </div>
@@ -1657,8 +1668,8 @@ export default function App() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索技能、项目、智能体应用或路径"
-              aria-label="搜索技能、项目、智能体应用或路径"
+              placeholder="搜索技能、项目、全局目录或路径"
+              aria-label="搜索技能、项目、全局目录或路径"
             />
           </div>
           <div className="topbar-actions">
@@ -1685,8 +1696,8 @@ export default function App() {
             <div className="list-pane">
               <PaneHeader
                 view={view}
-                title={view === "global" ? selectedAgent?.name ?? "我的 Agent" : view === "projects" ? selectedProject?.name ?? "我的项目" : undefined}
-                subtitle={view === "settings" ? "Agent、项目与技能根目录" : view === "projects" && selectedProject ? "项目整体应用到所有 Agent" : view === "global" && selectedAgent ? selectedAgent.globalPath : undefined}
+                title={view === "global" ? selectedAgent?.name ?? "全局目录" : view === "projects" ? selectedProject?.name ?? "我的项目" : undefined}
+                subtitle={view === "settings" ? "全局目录、项目与技能根目录" : view === "projects" && selectedProject ? "项目技能统一应用到 .agents/skills" : view === "global" && selectedAgent ? selectedAgent.globalPath : undefined}
                 count={
                   view === "library"
                     ? filteredSkills.length
@@ -1876,7 +1887,7 @@ function PaneHeader({
 }) {
   const title: Record<ViewKey, string> = {
     library: "技能列表",
-    global: "我的 Agent",
+    global: "全局目录",
     projects: "我的项目",
     presets: "技能组合",
     settings: "设置",
@@ -1939,9 +1950,9 @@ type OnboardingStep = 0 | 1 | 2 | 3 | 4;
 const onboardingStepMeta: Array<{ id: Exclude<OnboardingStep, 0>; title: string; label: string; description: string }> = [
   {
     id: 1,
-    title: "添加 Agent",
-    label: "工具",
-    description: "选择要管理的工具。已检测到的工具会默认选中，也可以先跳过。",
+    title: "确认全局目录",
+    label: "目录",
+    description: "影子默认管理 ~/.agents/skills。确认要启用的全局目录，也可以先跳过。",
   },
   {
     id: 2,
@@ -2000,7 +2011,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
         setDetectedAgents(list);
         setSelectedAgentIds(new Set(list.filter((agent) => agent.exists).map((agent) => agent.id)));
       } catch (cause) {
-        setStepError(`无法检测默认 Agent：${cleanErrorMessage(cause)}`);
+        setStepError(`无法检测默认全局目录：${cleanErrorMessage(cause)}`);
       } finally {
         setAgentLoading(false);
       }
@@ -2037,7 +2048,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
       }
       setEnabledAgentCount(selectedAgentIds.size);
     } catch (cause) {
-      setStepError(`保存 Agent 选择失败：${cleanErrorMessage(cause)}`);
+      setStepError(`保存全局目录选择失败：${cleanErrorMessage(cause)}`);
       setBusy(false);
       return false;
     }
@@ -2458,7 +2469,7 @@ function OnboardingScreen({ onFinished }: { onFinished: (summary: OnboardingSumm
               <div className="onboarding-empty">
                 {projectSuggestionScanFailed
                   ? "暂时没有拿到项目推荐。可以手动添加，也可以继续。"
-                  : "没有发现明显的 Agent 工作目录。可以手动添加，也可以稍后在设置里添加。"}
+                  : "没有发现明显的项目工作目录。可以手动添加，也可以稍后在设置里添加。"}
               </div>
             )}
             {projects.length ? (
@@ -2721,7 +2732,7 @@ function StartupFallback({ error, onRetry }: { error: string | null; onRetry: ()
       <AlertTriangle size={22} />
       <div>
         <h1>本地状态没有读取成功</h1>
-        <p>{error ? cleanErrorMessage(error) : "应用暂时没有拿到技能、Agent 和项目状态。"}</p>
+        <p>{error ? cleanErrorMessage(error) : "应用暂时没有拿到技能、全局目录和项目状态。"}</p>
         <p>优先检查 <code>~/.skills-manager</code> 目录权限，或直接刷新重试。</p>
         <button type="button" className="primary-button" onClick={onRetry}>
           <RefreshCw size={16} />
@@ -3173,7 +3184,7 @@ function SkillTransferRow({
   const secondaryMeta = item.kind === "composition"
     ? `${item.enabledCount}/${item.memberCount} 技能`
     : item.targetCount > 1
-      ? `${item.enabledCount}/${item.targetCount} Agent`
+      ? `${item.enabledCount}/${item.targetCount} 目录`
       : null;
   const showStatusPill = item.status !== "disabled" && item.status !== "enabled";
 
@@ -3241,7 +3252,7 @@ function TransferRowHint({ item }: { item: TransferItem }) {
     return <small className="transfer-row-hint">{issue}</small>;
   }
   if (item.status === "partial") {
-    return <small className="transfer-row-hint">部分 Agent 已应用，可继续补齐</small>;
+    return <small className="transfer-row-hint">部分目录已应用，可继续补齐</small>;
   }
   return null;
 }
@@ -3333,10 +3344,10 @@ function PresetList({
                       className="compact-action primary"
                       disabled={working || !canApply}
                       onClick={() => onApply(preset)}
-                      title={canApply ? "应用组合" : "空组合不能应用"}
+                      title={canApply ? "选中组合内全部成员" : "空组合没有可选成员"}
                     >
                       <Link2 size={14} />
-                      <span>应用</span>
+                      <span>选中全部成员</span>
                     </button>
                     <button
                       type="button"
@@ -3374,7 +3385,7 @@ function PresetList({
           <EmptyGuidance
             illustration={EMPTY_STATE_ILLUSTRATIONS.compositions}
             title="创建第一个技能组合"
-            description="创建后可以把多个 Skill 组织成一个能力单元，之后一键应用到我的 Agent 或我的项目。"
+            description="创建后可以把多个 Skill 组织成一个能力单元，一键选中全部成员，再统一应用到全局目录或我的项目。"
             action="新建组合"
             actionIcon={<Plus size={16} />}
             onAction={onCreate}
@@ -3507,14 +3518,14 @@ function SettingsPanel({
           <div>
             <h2>
               <Globe2 size={15} />
-              我的 Agent
+              全局目录
             </h2>
-            <p>管理各 Agent 的全局 Skill 目录。系统会据此识别名称，并推断项目内的 Skill 目录规则。</p>
+            <p>管理全局 Skill 目录。默认指向 <code>~/.agents/skills</code>，高级用户可手动添加其他全局目录。</p>
           </div>
           <button
             className="icon-button"
-            aria-label="添加 Agent"
-            title="添加 Agent"
+            aria-label="添加全局目录"
+            title="添加全局目录"
             onClick={onPickAgent}
           >
             <Plus size={16} />
@@ -3525,7 +3536,7 @@ function SettingsPanel({
             <AgentSettingRow
               key={agent.id}
               agent={agent}
-              canRemove={state.agents.length > 1}
+              canRemove={agent.id !== "agents"}
               onPickPath={onUpdateAgentPath}
               onRemove={onRemoveAgent}
               onToggleEnabled={onToggleAgentEnabled}
@@ -3644,8 +3655,6 @@ function AgentSettingRow({
         <div className="setting-path-grid">
           <span>全局目录</span>
           <code>{agent.globalPath}</code>
-          <span>项目目录规则</span>
-          <code>{"<项目根目录>/"}{agent.projectRelativePath}</code>
         </div>
       </div>
       <div className="setting-row-actions">
@@ -3668,8 +3677,8 @@ function AgentSettingRow({
         <button
           className="icon-button danger"
           disabled={!canRemove}
-          aria-label={`移除 Agent ${agent.name}`}
-          title="移除 Agent"
+          aria-label={`移除全局目录 ${agent.name}`}
+          title="移除全局目录"
           onClick={() => onRemove(agent.id)}
         >
           <Trash2 size={16} />
@@ -3849,14 +3858,14 @@ function DistributionDrawer({
       label: `${project.name} / 项目`,
       path: project.path,
       scope: "project",
-      targets: enabledAgents.map((agent) => ({ agentId: agent.id, projectId: project.id })),
+      targets: [{ agentId: null, projectId: project.id }],
       scopeMissing: !project.exists,
     })),
   ].map((row) => {
     const statuses = drawerSkillIds
       .flatMap((skillId) =>
         row.targets
-          .map((target) => findTargetStatus(state, target.agentId, target.projectId ?? null, skillId))
+          .map((target) => findTargetStatus(state, target.agentId ?? "", target.projectId ?? null, skillId))
           .filter((status): status is TargetStatus => Boolean(status))
       )
       .filter((status): status is TargetStatus => Boolean(status));
@@ -3880,15 +3889,13 @@ function DistributionDrawer({
     const skillLabel = drawerSkills.length === 1
       ? drawerSkills[0].displayName
       : `${drawerSkillIds.length} 个技能`;
-    const targetPathLabel = row.scope === "project" ? `${row.path}/{agent-skill-root}` : row.path;
+    const targetPathLabel = row.scope === "project" ? `${row.path}/.agents/skills` : row.path;
     return {
       ...row,
       finalPath: drawerSkills.length === 1
         ? `${targetPathLabel}/${drawerSkills[0].name} -> ${drawerSkills[0].path}`
         : `${targetPathLabel}/{skill-name} -> ${state.skillsRoot}/{skill-name}`,
-      resultLabel: row.scope === "project"
-        ? `将 ${skillLabel} 启用到 ${row.label}下 ${row.targets.length} 个 Agent`
-        : `将 ${skillLabel} 启用到 ${row.label}`,
+      resultLabel: `将 ${skillLabel} 启用到 ${row.label}`,
       riskLabel: hasOverwriteRisk
         ? "需要覆盖目标同名内容"
         : hasBlockingPathRisk
@@ -4439,7 +4446,7 @@ function EnabledLocations({ statuses }: { statuses: TargetStatus[] }) {
           </div>
         ))
       ) : (
-        <p className="empty-inline">还没有启用位置。下一步可以在技能卡片上点击「使用」选择 Agent 或项目。</p>
+        <p className="empty-inline">还没有启用位置。下一步可以在技能卡片上点击「使用」选择全局目录或项目。</p>
       )}
     </div>
   );
@@ -4741,7 +4748,7 @@ function isBlockingPathMissingStatus(state: AppState, status: TargetStatus) {
 function buildGlobalTransferItems(state: AppState, agentId: string): TransferItem[] {
   const workspace = state.globalWorkspaces.find((item) => item.agentId === agentId);
   if (!workspace) return [];
-  const skillItems = workspace.statuses
+  return workspace.statuses
     .map((status) => buildSkillTransferItem(
       state,
       [status],
@@ -4751,7 +4758,6 @@ function buildGlobalTransferItems(state: AppState, agentId: string): TransferIte
       false,
     ))
     .sort(compareTransferItems);
-  return addPresetTransferItems(state, skillItems, [{ agentId, projectId: null }], 1);
 }
 
 function enabledAgentsForDistribution(state: AppState) {
@@ -4759,15 +4765,17 @@ function enabledAgentsForDistribution(state: AppState) {
 }
 
 function projectDeployTargets(state: AppState, projectId: string): DeployTarget[] {
-  return enabledAgentsForDistribution(state).map((agent) => ({ agentId: agent.id, projectId }));
+  return state.projects.some((project) => project.id === projectId)
+    ? [{ agentId: null, projectId }]
+    : [];
 }
 
 function buildProjectTransferItems(state: AppState, projectId: string): TransferItem[] {
   const project = state.projects.find((item) => item.id === projectId) ?? null;
   const pathMissingIsBlocking = !project?.exists;
-  const workspaces = state.projectWorkspaces.filter((workspace) => workspace.projectId === projectId);
+  const workspace = state.projectWorkspaces.find((item) => item.projectId === projectId);
   const grouped = new Map<string, TargetStatus[]>();
-  for (const workspace of workspaces) {
+  if (workspace) {
     for (const status of workspace.statuses) {
       const bucket = grouped.get(status.skillId) ?? [];
       bucket.push(status);
@@ -4776,7 +4784,7 @@ function buildProjectTransferItems(state: AppState, projectId: string): Transfer
   }
   const targets = projectDeployTargets(state, projectId);
   const targetCount = Math.max(targets.length, 1);
-  const skillItems = [...grouped.values()]
+  return [...grouped.values()]
     .map((statuses) => buildSkillTransferItem(
       state,
       statuses,
@@ -4786,7 +4794,6 @@ function buildProjectTransferItems(state: AppState, projectId: string): Transfer
       pathMissingIsBlocking,
     ))
     .sort(compareTransferItems);
-  return addPresetTransferItems(state, skillItems, targets, targetCount);
 }
 
 function buildSkillTransferItem(
@@ -5186,7 +5193,7 @@ function findTargetStatus(
   skillId: string,
 ) {
   const workspace = projectId
-    ? state.projectWorkspaces.find((item) => item.agentId === agentId && item.projectId === projectId)
+    ? state.projectWorkspaces.find((item) => item.projectId === projectId)
     : state.globalWorkspaces.find((item) => item.agentId === agentId);
   return workspace?.statuses.find((status) => status.skillId === skillId) ?? null;
 }

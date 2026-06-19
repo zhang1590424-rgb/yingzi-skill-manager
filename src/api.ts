@@ -149,23 +149,6 @@ export async function deletePreset(id: string): Promise<AppState> {
   return invoke<AppState>("delete_preset", { id });
 }
 
-export async function applyPreset(
-  presetId: string,
-  targets: DeployTarget[],
-  overwrite: boolean,
-): Promise<OperationReport> {
-  if (!isTauriRuntime()) return mockReport(targets.length || (presetId && overwrite ? 1 : 0));
-  return invoke<OperationReport>("apply_preset", { presetId, targets, overwrite });
-}
-
-export async function withdrawPreset(
-  presetId: string,
-  targets: DeployTarget[],
-): Promise<OperationReport> {
-  if (!isTauriRuntime()) return mockReport(targets.length || (presetId ? 1 : 0));
-  return invoke<OperationReport>("withdraw_preset", { presetId, targets });
-}
-
 export async function openPath(path: string): Promise<void> {
   if (!isTauriRuntime()) {
     console.info("openPath", path);
@@ -183,36 +166,8 @@ export async function detectDefaultAgents(): Promise<DetectedAgent[]> {
   if (!isTauriRuntime()) {
     return [
       {
-        id: "trae-cn",
-        name: "Trae CN",
-        globalPath: "/Users/mock/.trae-cn/skills",
-        projectRelativePath: ".trae-cn/skills",
-        exists: true,
-      },
-      {
-        id: "codex",
-        name: "Codex",
-        globalPath: "/Users/mock/.codex/skills",
-        projectRelativePath: ".codex/skills",
-        exists: true,
-      },
-      {
-        id: "claude-code",
-        name: "Claude Code",
-        globalPath: "/Users/mock/.claude/skills",
-        projectRelativePath: ".claude/skills",
-        exists: false,
-      },
-      {
-        id: "aiden",
-        name: "Aiden",
-        globalPath: "/Users/mock/.aiden/skills",
-        projectRelativePath: ".aiden/skills",
-        exists: true,
-      },
-      {
         id: "agents",
-        name: "Agents",
+        name: "全局目录",
         globalPath: "/Users/mock/.agents/skills",
         projectRelativePath: ".agents/skills",
         exists: false,
@@ -302,44 +257,12 @@ function mockPackageSkills() {
 function mockState(..._values: string[]): AppState {
   const agents = [
     {
-      id: "trae-cn",
-      name: "Trae CN",
-      globalPath: "/Users/bytedance/.trae-cn/skills",
-      projectRelativePath: ".trae-cn/skills",
-      enabled: true,
-      pathExists: true,
-    },
-    {
-      id: "codex",
-      name: "Codex",
-      globalPath: "/Users/bytedance/.codex/skills",
-      projectRelativePath: ".codex/skills",
-      enabled: true,
-      pathExists: true,
-    },
-    {
-      id: "claude-code",
-      name: "Claude Code",
-      globalPath: "/Users/bytedance/.claude/skills",
-      projectRelativePath: ".claude/skills",
-      enabled: true,
-      pathExists: true,
-    },
-    {
-      id: "aiden",
-      name: "Aiden",
-      globalPath: "/Users/bytedance/.aiden/skills",
-      projectRelativePath: ".aiden/skills",
-      enabled: true,
-      pathExists: false,
-    },
-    {
       id: "agents",
-      name: "Agents",
+      name: "全局目录",
       globalPath: "/Users/bytedance/.agents/skills",
       projectRelativePath: ".agents/skills",
       enabled: true,
-      pathExists: false,
+      pathExists: true,
     },
   ];
   const projects = [
@@ -410,42 +333,38 @@ function mockState(..._values: string[]): AppState {
       agentName: agent.name,
       projectId: null,
       projectName: null,
-      status: index === 1 && agent.id === "trae-cn" ? "conflict" as const : index === 2 ? "disabled" as const : "enabled" as const,
+      status: index === 1 ? "conflict" as const : index === 2 ? "disabled" as const : "enabled" as const,
       targetPath: `${agent.globalPath}/${skill.name}`,
       linkTarget: index === 2 ? null : skill.path,
-      issue: index === 1 && agent.id === "trae-cn" ? "目标位置已有同名内容" : null,
+      issue: index === 1 ? "目标位置已有同名内容" : null,
       rootExists: agent.pathExists,
     })),
   }));
-  const projectWorkspaces = projects.flatMap((project) =>
-    agents.map((agent) => ({
+  const projectWorkspaces = projects.map((project) => ({
+    projectId: project.id,
+    projectName: project.name,
+    projectPath: project.path,
+    projectExists: project.exists,
+    rootPath: `${project.path}/.agents/skills`,
+    rootExists: project.exists,
+    statuses: skills.map((skill, index) => ({
+      id: `project-${project.id}-${skill.id}`,
+      skillId: skill.id,
+      skillName: skill.name,
+      displayName: skill.displayName,
+      description: skill.description,
+      targetKind: "project" as const,
+      agentId: "project",
+      agentName: "项目目录",
       projectId: project.id,
       projectName: project.name,
-      projectPath: project.path,
-      projectExists: project.exists,
-      agentId: agent.id,
-      agentName: agent.name,
-      rootPath: `${project.path}/${agent.projectRelativePath}`,
+      status: project.exists ? (index === 0 ? "enabled" as const : "disabled" as const) : "pathMissing" as const,
+      targetPath: `${project.path}/.agents/skills/${skill.name}`,
+      linkTarget: index === 0 ? skill.path : null,
+      issue: project.exists ? null : "项目路径不存在",
       rootExists: project.exists,
-      statuses: skills.map((skill, index) => ({
-        id: `project-${project.id}-${agent.id}-${skill.id}`,
-        skillId: skill.id,
-        skillName: skill.name,
-        displayName: skill.displayName,
-        description: skill.description,
-        targetKind: "project" as const,
-        agentId: agent.id,
-        agentName: agent.name,
-        projectId: project.id,
-        projectName: project.name,
-        status: project.exists ? (index === 0 ? "enabled" as const : "disabled" as const) : "pathMissing" as const,
-        targetPath: `${project.path}/${agent.projectRelativePath}/${skill.name}`,
-        linkTarget: index === 0 ? skill.path : null,
-        issue: project.exists ? null : "项目路径不存在",
-        rootExists: project.exists,
-      })),
     })),
-  );
+  }));
   return {
     baseDir: "/Users/bytedance/.skills-manager",
     skillsRoot: "/Users/bytedance/.skills-manager/skills",
@@ -464,6 +383,6 @@ function mockState(..._values: string[]): AppState {
         skillIds: ["code-review", "session-wrap-up"],
       },
     ],
-    issues: ["Trae CN / 全局 / 产品调研：目标位置已有同名内容"],
+    issues: ["全局目录 / 全局 / 产品调研：目标位置已有同名内容"],
   };
 }
