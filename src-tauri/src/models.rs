@@ -12,25 +12,12 @@ pub struct Target {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectSuggestion {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub reason: String,
-    pub score: usize,
-    pub recommended: bool,
-    pub already_added: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Skill {
     pub id: String,
     pub name: String,
     pub display_name: String,
     pub description: String,
     pub path: String,
-    pub has_skill_md: bool,
     pub tags: Vec<String>,
     pub enabled_count: usize,
     pub issue_count: usize,
@@ -51,8 +38,6 @@ pub struct TargetStatus {
     pub target_path: String,
     pub link_target: Option<String>,
     pub issue: Option<String>,
-    pub issue_key: Option<String>,
-    pub ignored: bool,
     pub root_exists: bool,
 }
 
@@ -70,15 +55,6 @@ pub struct TargetWorkspace {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Preset {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub skill_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AppState {
     pub base_dir: String,
     pub skills_root: String,
@@ -87,7 +63,6 @@ pub struct AppState {
     pub targets: Vec<Target>,
     pub skills: Vec<Skill>,
     pub workspaces: Vec<TargetWorkspace>,
-    pub presets: Vec<Preset>,
     pub issues: Vec<String>,
 }
 
@@ -141,27 +116,6 @@ impl SkillStatus {
             SkillStatus::Invalid => "格式异常",
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OnboardingStatus {
-    pub completed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BulkAdoptItem {
-    pub target_id: String,
-    pub skill_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BulkAdoptReport {
-    pub state: AppState,
-    pub changed: usize,
-    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

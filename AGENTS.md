@@ -54,9 +54,6 @@
 技能：import_skill, delete_skill, deploy_skill, withdraw_skill, set_skill_tags
 目标：add_target, remove_target
 标签：get_all_tags, get_all_tags_info, rename_tag, set_tag_color, delete_tag, reorder_tag
-问题：adopt_skill_from_target, remove_unmanaged_skill, ignore_issue_keys, resolve_broken_issue_keys, bulk_adopt_skills
-预设：upsert_preset, delete_preset
-引导：get_onboarding_status, set_onboarding_completed, suggest_onboarding_projects, list_unmanaged_for_onboarding
 包导入：scan_skill_package, import_skills_from_package
 系统：open_path
 ```
@@ -116,6 +113,8 @@
 - 不做覆盖前备份，不做操作日志。
 - 项目级管理只支持手动添加项目路径，不自动扫描项目。
 - 标签支持自定义颜色（16 色预设调色盘）、重命名、排序和删除。
+- 标签体系是组织和筛选 Skill 的唯一分组方式，不再保留技能组合 / Preset。
+- 不兼容早期历史数据库，不保留 `agents` / `projects` / `presets` 等旧表迁移逻辑。
 
 ## 不做什么
 
@@ -123,6 +122,8 @@
 - 不做 Global/Project 双类型分离（统一 Target）。
 - 不做 7 种细分状态（合并为 3 种）。
 - 不做复杂 onboarding 流程。
+- 不做技能组合 / Preset（已由标签体系替代）。
+- 不做目标未入库 Skill 的接管、忽略问题和批量修复入口。
 - 不做市场链接安装。
 - 不用 Inter/Roboto/Open Sans。
 - 不用渐变、发光、玻璃拟态。

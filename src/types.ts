@@ -22,7 +22,6 @@ export interface Skill {
   displayName: string;
   description: string;
   path: string;
-  hasSkillMd: boolean;
   tags: string[];
   enabledCount: number;
   issueCount: number;
@@ -34,9 +33,6 @@ export interface Target {
   name: string;
   path: string;
   isDefault: boolean;
-  exists: boolean;
-  appliedCount: number;
-  totalCount: number;
 }
 
 export interface TargetSkillStatus {
@@ -46,9 +42,6 @@ export interface TargetSkillStatus {
   displayName: string;
   description: string;
   status: SkillStatusV2;
-  rawStatus: SkillStatusRaw;
-  targetPath: string;
-  issue?: string | null;
 }
 
 export interface AppState {
@@ -57,7 +50,6 @@ export interface AppState {
   skills: Skill[];
   targets: Target[];
   targetStatuses: Map<string, TargetSkillStatus[]>; // key = target.id
-  issues: string[];
 }
 
 // Tag management

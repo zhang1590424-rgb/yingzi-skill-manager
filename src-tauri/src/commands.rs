@@ -1,10 +1,9 @@
 use crate::models::{
-    AppState, BulkAdoptItem, BulkAdoptReport, DeployTarget, OnboardingStatus, OperationReport,
-    PackageImportReport, PackageSkill, ProjectSuggestion, SkillPackageScan, TargetStatus,
+    AppState, DeployTarget, OperationReport, PackageImportReport, PackageSkill, SkillPackageScan,
 };
 use crate::storage::{
     compute_skills_path, copy_dir_all, create_dir_symlink, is_link_to, remove_path,
-    resolve_symlink_target, slugify, Store,
+    slugify, Store,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -12,45 +11,10 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use tauri::Manager;
-
-const BUILTIN_PRESET_RESOURCE_DIR: &str = "preset-skills";
-const FEISHU_BUNDLE_ID: &str = "feishu-skill-group";
-const FEISHU_BUNDLE_PRESET_ID: &str = "feishu-skill-group";
-const FEISHU_BUNDLE_NAME: &str = "飞书技能组";
-const FEISHU_BUNDLE_DESCRIPTION: &str =
-    "官方飞书 CLI 技能组合，用于通过 lark-cli 操作文档、消息、表格、日历等飞书能力。";
 
 #[tauri::command]
 pub fn get_app_state() -> Result<AppState, String> {
     run(|| Store::new()?.load_app_state())
-}
-
-#[tauri::command]
-pub fn create_skill(name: String, description: String) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        let skill_id = slugify(&name);
-        let skill_path = store.skill_path(&skill_id);
-        if skill_path.exists() {
-            return Err(anyhow!("已存在同名技能：{}", skill_id));
-        }
-        fs::create_dir_all(&skill_path)?;
-        let description = if description.trim().is_empty() {
-            "请补充这个技能适用的场景和触发条件。".to_string()
-        } else {
-            description.trim().to_string()
-        };
-        let content = format!(
-            "---\nname: {}\ndescription: {}\n---\n\n# {}\n\n## 使用场景\n\n{}\n",
-            name.trim(),
-            description,
-            name.trim(),
-            description
-        );
-        fs::write(skill_path.join("SKILL.md"), content)?;
-        store.load_app_state()
-    })
 }
 
 #[tauri::command]
@@ -110,69 +74,6 @@ pub fn import_skills_from_package(
                     errors.push(format!("{}：{:#}", skill.display_name, error));
                 }
             }
-        }
-
-        Ok(PackageImportReport {
-            state: store.load_app_state()?,
-            changed,
-            skipped,
-            errors,
-        })
-    })
-}
-
-#[tauri::command]
-pub fn scan_builtin_preset_skills(app: tauri::AppHandle) -> Result<SkillPackageScan, String> {
-    run(|| {
-        let store = Store::new()?;
-        let root = builtin_preset_skills_dir(&app)?;
-        scan_builtin_preset_skills_internal(&store, &root)
-    })
-}
-
-#[tauri::command]
-pub fn install_builtin_preset_skills(
-    app: tauri::AppHandle,
-    skill_ids: Vec<String>,
-) -> Result<PackageImportReport, String> {
-    run(|| {
-        let store = Store::new()?;
-        let root = builtin_preset_skills_dir(&app)?;
-        let scan = scan_builtin_preset_skills_internal(&store, &root)?;
-        let requested: HashSet<String> = skill_ids.into_iter().collect();
-        let mut changed = 0usize;
-        let mut skipped = 0usize;
-        let mut errors = Vec::new();
-
-        for skill in scan.skills {
-            if !requested.contains(&skill.id) || skill.item_kind != "skill" {
-                continue;
-            }
-            let source = root.join(&skill.name);
-            let target = store.skill_path(&skill.id);
-            if target.exists() {
-                skipped += 1;
-                continue;
-            }
-            match import_builtin_preset_skill(&source, &target) {
-                Ok(()) => changed += 1,
-                Err(error) => {
-                    if target.exists() {
-                        let _ = remove_path(&target);
-                    }
-                    errors.push(format!("{}：{:#}", skill.display_name, error));
-                }
-            }
-        }
-
-        if requested.contains(FEISHU_BUNDLE_ID) {
-            install_feishu_builtin_skill_bundle(
-                &store,
-                &root,
-                &mut changed,
-                &mut skipped,
-                &mut errors,
-            )?;
         }
 
         Ok(PackageImportReport {
@@ -420,66 +321,6 @@ pub fn withdraw_skill(
 }
 
 #[tauri::command]
-pub fn adopt_skill_from_target(
-    target_id: String,
-    skill_name: String,
-) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        adopt_skill_internal(&store, &target_id, &skill_name)?;
-        store.load_app_state()
-    })
-}
-
-fn adopt_skill_internal(
-    store: &Store,
-    target_id: &str,
-    skill_name: &str,
-) -> Result<()> {
-    let target = DeployTarget {
-        target_id: target_id.to_string(),
-    };
-    let root = resolve_target_root(store, &target)?;
-    let source = root.join(skill_name);
-    if !source.exists() && fs::symlink_metadata(&source).is_err() {
-        return Err(anyhow!("目标技能不存在：{}", source.display()));
-    }
-
-    let source_for_copy = resolve_symlink_target(&source).unwrap_or_else(|| source.clone());
-    if !source_for_copy.join("SKILL.md").exists() {
-        return Err(anyhow!("该目标缺少 SKILL.md，暂不自动入库"));
-    }
-
-    let skill_id = slugify(skill_name);
-    let library_target = store.skill_path(&skill_id);
-    if !library_target.exists() {
-        copy_dir_all(&source_for_copy, &library_target)?;
-    }
-
-    if fs::symlink_metadata(&source).is_ok() {
-        remove_path(&source)?;
-    }
-    if let Some(parent) = source.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    create_dir_symlink(&library_target, &source)?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn remove_unmanaged_skill(target_path: String) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        let path = PathBuf::from(&target_path);
-        if !path.exists() && fs::symlink_metadata(&path).is_err() {
-            return Err(anyhow!("目标路径不存在：{}", target_path));
-        }
-        remove_path(&path)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
 pub fn add_target(path: String) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
@@ -493,37 +334,6 @@ pub fn remove_target(target_id: String) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
         store.remove_target(&target_id)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn suggest_onboarding_projects() -> Result<Vec<ProjectSuggestion>, String> {
-    run(|| Store::new()?.suggest_onboarding_projects())
-}
-
-#[tauri::command]
-pub fn upsert_preset(
-    id: Option<String>,
-    name: String,
-    description: String,
-    skill_ids: Vec<String>,
-) -> Result<AppState, String> {
-    run(|| {
-        if name.trim().is_empty() {
-            return Err(anyhow!("技能组合名称不能为空"));
-        }
-        let store = Store::new()?;
-        store.upsert_preset(id, name, description, skill_ids)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn delete_preset(id: String) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.delete_preset(&id)?;
         store.load_app_state()
     })
 }
@@ -697,203 +507,6 @@ fn scan_skill_package_internal(store: &Store, package_path: &str) -> Result<Skil
         skills,
         ignored_plugin_skills,
     })
-}
-
-fn builtin_preset_skills_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
-    let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join(BUILTIN_PRESET_RESOURCE_DIR);
-    if dev_dir.is_dir() {
-        return Ok(dev_dir);
-    }
-
-    let resource_dir = app.path().resource_dir().context("无法定位应用资源目录")?;
-    let bundled_dir = resource_dir.join(BUILTIN_PRESET_RESOURCE_DIR);
-    if bundled_dir.is_dir() {
-        return Ok(bundled_dir);
-    }
-
-    Err(anyhow!("预置 Skill 暂时不可用，可以先跳过。"))
-}
-
-fn scan_builtin_preset_skills_internal(store: &Store, root: &Path) -> Result<SkillPackageScan> {
-    if !root.is_dir() {
-        return Err(anyhow!("预置 Skill 暂时不可用，可以先跳过。"));
-    }
-
-    let existing_ids: HashSet<String> = store
-        .scan_library_skills()?
-        .into_iter()
-        .map(|skill| skill.id)
-        .collect();
-    let presets = store.load_presets()?;
-    let mut skills = Vec::new();
-
-    for entry in fs::read_dir(root).context("无法读取预置 Skill")? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() || !path.join("SKILL.md").exists() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if is_feishu_builtin_skill_name(&name) {
-            continue;
-        }
-        let id = slugify(&name);
-        let content = fs::read_to_string(path.join("SKILL.md"))
-            .with_context(|| format!("无法读取预置 Skill：{}", name))?;
-        let (display_name, description) = package_skill_metadata(&name, &content);
-        skills.push(PackageSkill {
-            id: id.clone(),
-            name: name.clone(),
-            display_name,
-            description,
-            category: package_skill_category(&name).to_string(),
-            entry_prefix: name,
-            exists: existing_ids.contains(&id),
-            item_kind: "skill".to_string(),
-            member_count: 1,
-        });
-    }
-
-    let feishu_skill_names = list_feishu_builtin_skill_names(root)?;
-    if !feishu_skill_names.is_empty() {
-        let feishu_skill_ids = feishu_skill_names
-            .iter()
-            .map(|name| slugify(name))
-            .collect::<Vec<_>>();
-        let feishu_preset_exists = presets
-            .iter()
-            .find(|preset| preset.id == FEISHU_BUNDLE_PRESET_ID)
-            .is_some_and(|preset| {
-                feishu_skill_ids
-                    .iter()
-                    .all(|id| preset.skill_ids.contains(id))
-            });
-        let feishu_skills_exist = feishu_skill_ids.iter().all(|id| existing_ids.contains(id));
-        skills.push(PackageSkill {
-            id: FEISHU_BUNDLE_ID.to_string(),
-            name: FEISHU_BUNDLE_ID.to_string(),
-            display_name: FEISHU_BUNDLE_NAME.to_string(),
-            description: "安装官方飞书 CLI 的 Agent Skills，并创建一个可批量应用的技能组合。"
-                .to_string(),
-            category: "其他工具".to_string(),
-            entry_prefix: format!("bundle:{}", FEISHU_BUNDLE_ID),
-            exists: feishu_preset_exists && feishu_skills_exist,
-            item_kind: "bundle".to_string(),
-            member_count: feishu_skill_names.len(),
-        });
-    }
-
-    skills.sort_by(|a, b| {
-        package_category_order(&a.category)
-            .cmp(&package_category_order(&b.category))
-            .then(package_skill_order(&a.name).cmp(&package_skill_order(&b.name)))
-            .then(a.display_name.cmp(&b.display_name))
-    });
-
-    Ok(SkillPackageScan {
-        package_path: "builtin".to_string(),
-        skills,
-        ignored_plugin_skills: 0,
-    })
-}
-
-fn install_feishu_builtin_skill_bundle(
-    store: &Store,
-    root: &Path,
-    changed: &mut usize,
-    skipped: &mut usize,
-    errors: &mut Vec<String>,
-) -> Result<()> {
-    let names = list_feishu_builtin_skill_names(root)?;
-    if names.is_empty() {
-        return Ok(());
-    }
-
-    let mut member_ids = Vec::new();
-    let before_changed = *changed;
-
-    for name in names {
-        let id = slugify(&name);
-        let source = root.join(&name);
-        let target = store.skill_path(&id);
-        if target.exists() {
-            *skipped += 1;
-            member_ids.push(id);
-            continue;
-        }
-        match import_builtin_preset_skill(&source, &target) {
-            Ok(()) => {
-                *changed += 1;
-                member_ids.push(id);
-            }
-            Err(error) => {
-                if target.exists() {
-                    let _ = remove_path(&target);
-                }
-                errors.push(format!("{}：{:#}", name, error));
-            }
-        }
-    }
-
-    if member_ids.is_empty() {
-        return Ok(());
-    }
-
-    member_ids.sort();
-    let preset_already_complete = store
-        .load_presets()?
-        .into_iter()
-        .find(|preset| preset.id == FEISHU_BUNDLE_PRESET_ID)
-        .is_some_and(|preset| member_ids.iter().all(|id| preset.skill_ids.contains(id)));
-    store
-        .upsert_preset(
-            Some(FEISHU_BUNDLE_PRESET_ID.to_string()),
-            FEISHU_BUNDLE_NAME.to_string(),
-            FEISHU_BUNDLE_DESCRIPTION.to_string(),
-            member_ids,
-        )
-        .context("无法创建飞书技能组")?;
-    if *changed == before_changed && !preset_already_complete {
-        *changed += 1;
-    }
-    Ok(())
-}
-
-fn list_feishu_builtin_skill_names(root: &Path) -> Result<Vec<String>> {
-    let mut names = Vec::new();
-    for entry in fs::read_dir(root).context("无法读取飞书预置 Skill")? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() || !path.join("SKILL.md").exists() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if is_feishu_builtin_skill_name(&name) {
-            names.push(name);
-        }
-    }
-    names.sort();
-    Ok(names)
-}
-
-fn is_feishu_builtin_skill_name(name: &str) -> bool {
-    name.starts_with("lark-")
-}
-
-fn import_builtin_preset_skill(source: &Path, target: &Path) -> Result<()> {
-    if !source.join("SKILL.md").exists() {
-        return Err(anyhow!("预置 Skill 缺少 SKILL.md"));
-    }
-    copy_dir_all(source, target)?;
-    if !target.join("SKILL.md").exists() {
-        if target.exists() {
-            remove_path(target)?;
-        }
-        return Err(anyhow!("安装后缺少 SKILL.md"));
-    }
-    Ok(())
 }
 
 fn list_zip_entries(package: &Path) -> Result<Vec<String>> {
@@ -1076,7 +689,6 @@ fn package_skill_order(name: &str) -> usize {
         "agent-browser" => 11,
         "find-skills" => 12,
         "skill-creator" => 13,
-        FEISHU_BUNDLE_ID => 14,
         _ => 99,
     }
 }
@@ -1147,67 +759,6 @@ fn parse_inline_tag_value(value: &str) -> Vec<String> {
         .map(|tag| tag.trim().trim_matches('"').trim_matches('\'').trim().to_string())
         .filter(|tag| !tag.is_empty())
         .collect()
-}
-
-#[tauri::command]
-pub fn get_onboarding_status() -> Result<OnboardingStatus, String> {
-    run(|| Store::new()?.onboarding_status())
-}
-
-#[tauri::command]
-pub fn set_onboarding_completed(value: bool) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.set_onboarding_completed(value)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn list_unmanaged_for_onboarding() -> Result<Vec<TargetStatus>, String> {
-    run(|| Store::new()?.list_unmanaged_in_targets())
-}
-
-#[tauri::command]
-pub fn bulk_adopt_skills(items: Vec<BulkAdoptItem>) -> Result<BulkAdoptReport, String> {
-    run(|| {
-        let store = Store::new()?;
-        let mut changed = 0usize;
-        let mut errors = Vec::new();
-        for item in items {
-            match adopt_skill_internal(
-                &store,
-                &item.target_id,
-                &item.skill_name,
-            ) {
-                Ok(()) => changed += 1,
-                Err(error) => errors.push(format!("{}：{:#}", item.skill_name, error)),
-            }
-        }
-        let state = store.load_app_state()?;
-        Ok(BulkAdoptReport {
-            state,
-            changed,
-            errors,
-        })
-    })
-}
-
-#[tauri::command]
-pub fn ignore_issue_keys(issue_keys: Vec<String>) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.ignore_issue_keys(&issue_keys)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn resolve_broken_issue_keys(issue_keys: Vec<String>) -> Result<OperationReport, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.resolve_broken_issue_keys(&issue_keys)
-    })
 }
 
 #[tauri::command]

@@ -1,7 +1,4 @@
-use crate::models::{
-    AppState, OnboardingStatus, Preset, ProjectSuggestion, Skill, SkillStatus, TagInfo, Target,
-    TargetStatus, TargetWorkspace,
-};
+use crate::models::{AppState, Skill, SkillStatus, TagInfo, Target, TargetStatus, TargetWorkspace};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
 use serde_json::json;
@@ -22,11 +19,6 @@ pub struct Store {
 pub const PROJECT_SKILLS_RELATIVE: &str = ".agents/skills";
 const DEFAULT_GLOBAL_DIR_ID: &str = "agents";
 const DEFAULT_GLOBAL_DIR_NAME: &str = "全局";
-const TARGETS_TABLE_MIGRATION_KEY: &str = "targets_table_migrated";
-const ONBOARDING_PROJECT_SCAN_LIMIT: usize = 200;
-const ONBOARDING_PROJECT_RETURN_LIMIT: usize = 8;
-const ONBOARDING_PROJECT_SCORE_THRESHOLD: usize = 24;
-const ONBOARDING_PROJECT_RECOMMENDED_SCORE: usize = 50;
 
 /// Smart path detection: if `path` already ends with `.agents/skills`, use as-is;
 /// otherwise append `/.agents/skills`.
@@ -86,33 +78,11 @@ impl Store {
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS agents (
-              id TEXT PRIMARY KEY,
-              name TEXT NOT NULL,
-              global_path TEXT NOT NULL,
-              project_relative_path TEXT NOT NULL,
-              enabled INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE TABLE IF NOT EXISTS projects (
-              id TEXT PRIMARY KEY,
-              name TEXT NOT NULL,
-              path TEXT NOT NULL UNIQUE
-            );
             CREATE TABLE IF NOT EXISTS targets (
               id TEXT PRIMARY KEY,
               name TEXT NOT NULL,
               path TEXT NOT NULL UNIQUE,
               is_default INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS presets (
-              id TEXT PRIMARY KEY,
-              name TEXT NOT NULL,
-              description TEXT NOT NULL DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS preset_skills (
-              preset_id TEXT NOT NULL,
-              skill_id TEXT NOT NULL,
-              PRIMARY KEY (preset_id, skill_id)
             );
             CREATE TABLE IF NOT EXISTS deployments (
               id TEXT PRIMARY KEY,
@@ -121,10 +91,6 @@ impl Store {
               status TEXT NOT NULL,
               target_path TEXT NOT NULL,
               link_target TEXT
-            );
-            CREATE TABLE IF NOT EXISTS ignored_issues (
-              issue_key TEXT PRIMARY KEY,
-              ignored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS skill_tags (
               skill_id TEXT NOT NULL,
@@ -171,9 +137,6 @@ impl Store {
             }
         }
 
-        // Migrate data from old agents/projects tables into targets
-        migrate_old_tables_to_targets(&conn)?;
-
         sync_default_target(&conn)?;
 
         Ok(())
@@ -208,8 +171,6 @@ impl Store {
                 skill.tags = tags.clone();
             }
         }
-
-        let presets = self.load_presets()?;
 
         let mut workspaces = Vec::new();
         let mut all_statuses = Vec::new();
@@ -279,7 +240,6 @@ impl Store {
             targets,
             skills,
             workspaces,
-            presets,
             issues,
         })
     }
@@ -301,94 +261,6 @@ impl Store {
 
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .context("无法读取目标列表")
-    }
-
-    pub fn suggest_onboarding_projects(&self) -> Result<Vec<ProjectSuggestion>> {
-        let existing_paths: HashSet<String> = self
-            .load_targets()?
-            .into_iter()
-            .filter_map(|target| normalize_existing_path(Path::new(&target.path)))
-            .collect();
-        let mut suggestions: HashMap<String, ProjectSuggestion> = HashMap::new();
-
-        for root in onboarding_document_roots() {
-            if !root.is_dir() {
-                continue;
-            }
-            for path in collect_onboarding_candidate_dirs(&root) {
-                let Ok(canonical) = path.canonicalize() else {
-                    continue;
-                };
-                if !canonical.is_dir() {
-                    continue;
-                }
-                let Some(score) = score_onboarding_project_dir(&canonical) else {
-                    continue;
-                };
-                if score.score < ONBOARDING_PROJECT_SCORE_THRESHOLD {
-                    continue;
-                }
-
-                let normalized = canonical.to_string_lossy().to_string();
-                let name = canonical
-                    .file_name()
-                    .map(|value| value.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "未命名项目".to_string());
-                let already_added = existing_paths.contains(&normalized);
-                let reason = if already_added {
-                    format!("已添加 · {}", score.reasons.join("，"))
-                } else {
-                    score.reasons.join("，")
-                };
-                let suggestion = ProjectSuggestion {
-                    id: stable_id(&normalized),
-                    name,
-                    path: normalized.clone(),
-                    reason,
-                    score: score.score,
-                    recommended: score.score >= ONBOARDING_PROJECT_RECOMMENDED_SCORE,
-                    already_added,
-                };
-
-                suggestions
-                    .entry(normalized)
-                    .and_modify(|current| {
-                        if suggestion.score > current.score {
-                            *current = suggestion.clone();
-                        }
-                    })
-                    .or_insert(suggestion);
-            }
-        }
-
-        let mut result = suggestions.into_values().collect::<Vec<_>>();
-        result.sort_by(|a, b| {
-            b.recommended
-                .cmp(&a.recommended)
-                .then(b.score.cmp(&a.score))
-                .then(a.already_added.cmp(&b.already_added))
-                .then(a.name.cmp(&b.name))
-        });
-        result.truncate(ONBOARDING_PROJECT_RETURN_LIMIT);
-        Ok(result)
-    }
-
-    pub fn load_presets(&self) -> Result<Vec<Preset>> {
-        let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id, name, description FROM presets ORDER BY name")?;
-        let rows = stmt.query_map([], |row| {
-            let preset_id: String = row.get(0)?;
-            let skill_ids = load_preset_skills(&conn, &preset_id)?;
-            Ok(Preset {
-                id: preset_id,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                skill_ids,
-            })
-        })?;
-
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .context("无法读取技能组合")
     }
 
     pub fn scan_library_skills(&self) -> Result<Vec<Skill>> {
@@ -422,7 +294,6 @@ impl Store {
                 display_name: metadata.display_name,
                 description: metadata.description,
                 path: path.to_string_lossy().to_string(),
-                has_skill_md,
                 tags: metadata.tags,
                 enabled_count: 0,
                 issue_count: if has_skill_md { 0 } else { 1 },
@@ -440,7 +311,6 @@ impl Store {
         root: &Path,
         target: &Target,
     ) -> Result<Vec<TargetStatus>> {
-        let ignored_issue_keys = self.load_ignored_issue_keys().unwrap_or_default();
         let root_exists = root.exists();
         let scope_exists = Path::new(&target.path).exists();
         let root_missing_is_deployable = !root_exists && scope_exists;
@@ -471,8 +341,6 @@ impl Store {
                 target_path: target_path.to_string_lossy().to_string(),
                 link_target: status.link_target,
                 issue: status.issue,
-                issue_key: None,
-                ignored: false,
                 root_exists,
             });
         }
@@ -493,11 +361,8 @@ impl Store {
                         target_path: root.to_string_lossy().to_string(),
                         link_target: None,
                         issue: Some(format!("无法读取目录：{}", error)),
-                        issue_key: None,
-                        ignored: false,
                         root_exists,
                     });
-                    apply_issue_metadata(&mut statuses, &ignored_issue_keys);
                     statuses.sort_by(|a, b| a.display_name.cmp(&b.display_name));
                     return Ok(statuses);
                 }
@@ -518,8 +383,6 @@ impl Store {
                             target_path: root.to_string_lossy().to_string(),
                             link_target: None,
                             issue: Some(format!("目录条目无法读取：{}", error)),
-                            issue_key: None,
-                            ignored: false,
                             root_exists,
                         });
                         continue;
@@ -548,8 +411,6 @@ impl Store {
                             target_path: path.to_string_lossy().to_string(),
                             link_target: None,
                             issue: Some("软链接目标无法读取".to_string()),
-                            issue_key: None,
-                            ignored: false,
                             root_exists,
                         });
                         continue;
@@ -567,8 +428,6 @@ impl Store {
                             target_path: path.to_string_lossy().to_string(),
                             link_target: Some(source_path.to_string_lossy().to_string()),
                             issue: Some("软链接目标不存在".to_string()),
-                            issue_key: None,
-                            ignored: false,
                             root_exists,
                         });
                         continue;
@@ -590,8 +449,6 @@ impl Store {
                             target_path: path.to_string_lossy().to_string(),
                             link_target: Some(source_path.to_string_lossy().to_string()),
                             issue: Some("软链接目标缺少 SKILL.md".to_string()),
-                            issue_key: None,
-                            ignored: false,
                             root_exists,
                         });
                         continue;
@@ -610,8 +467,6 @@ impl Store {
                         target_path: path.to_string_lossy().to_string(),
                         link_target: Some(source_path.to_string_lossy().to_string()),
                         issue: Some("目标目录有技能，但尚未进入主库".to_string()),
-                        issue_key: None,
-                        ignored: false,
                         root_exists,
                     });
                     continue;
@@ -641,89 +496,13 @@ impl Store {
                     link_target: resolve_symlink_target(&path)
                         .map(|p| p.to_string_lossy().to_string()),
                     issue: Some("目标目录有技能，但尚未进入主库".to_string()),
-                    issue_key: None,
-                    ignored: false,
                     root_exists,
                 });
             }
         }
 
-        apply_issue_metadata(&mut statuses, &ignored_issue_keys);
         statuses.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         Ok(statuses)
-    }
-
-    pub fn load_ignored_issue_keys(&self) -> Result<HashSet<String>> {
-        let conn = self.connection()?;
-        let mut statement = conn.prepare("SELECT issue_key FROM ignored_issues")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut keys = HashSet::new();
-        for row in rows {
-            keys.insert(row?);
-        }
-        Ok(keys)
-    }
-
-    pub fn ignore_issue_keys(&self, keys: &[String]) -> Result<()> {
-        let mut conn = self.connection()?;
-        let transaction = conn.transaction()?;
-        for key in keys {
-            transaction.execute(
-                "INSERT INTO ignored_issues (issue_key) VALUES (?1)
-                 ON CONFLICT(issue_key) DO UPDATE SET ignored_at = CURRENT_TIMESTAMP",
-                params![key],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    pub fn resolve_broken_issue_keys(
-        &self,
-        keys: &[String],
-    ) -> Result<crate::models::OperationReport> {
-        let requested: HashSet<&str> = keys.iter().map(String::as_str).collect();
-        let state = self.load_app_state()?;
-        let statuses = state
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.statuses.iter());
-        let mut report = crate::models::OperationReport::empty();
-
-        for status in statuses {
-            let Some(issue_key) = &status.issue_key else {
-                continue;
-            };
-            if !requested.contains(issue_key.as_str()) {
-                continue;
-            }
-            if status.status != SkillStatus::Broken {
-                report.skipped += 1;
-                continue;
-            }
-            let target_path = PathBuf::from(&status.target_path);
-            let Ok(metadata) = fs::symlink_metadata(&target_path) else {
-                report.skipped += 1;
-                continue;
-            };
-            if !metadata.file_type().is_symlink() {
-                report
-                    .errors
-                    .push(format!("{} 不是软链接，已跳过", status.target_path));
-                continue;
-            }
-            match fs::remove_file(&target_path) {
-                Ok(()) => report.changed += 1,
-                Err(error) => report
-                    .errors
-                    .push(format!("{}：{}", status.target_path, error)),
-            }
-        }
-
-        if report.changed + report.skipped + report.errors.len() < keys.len() {
-            report.skipped += keys.len() - report.changed - report.skipped - report.errors.len();
-        }
-        Ok(report)
     }
 
     pub fn persist_deployments(&self, statuses: &[TargetStatus]) -> Result<()> {
@@ -797,59 +576,6 @@ impl Store {
             .ok_or_else(|| anyhow!("未找到目标：{}", target_id))
     }
 
-    pub fn upsert_preset(
-        &self,
-        id: Option<String>,
-        name: String,
-        description: String,
-        skill_ids: Vec<String>,
-    ) -> Result<String> {
-        let trimmed_name = name.trim().to_string();
-        let preset_id_from_request = id.and_then(|value| {
-            let value = value.trim().to_string();
-            (!value.is_empty()).then_some(value)
-        });
-        let is_create = preset_id_from_request.is_none();
-        let preset_id = preset_id_from_request.unwrap_or_else(|| slugify(&trimmed_name));
-        let conn = self.connection()?;
-        if is_create {
-            let existing: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM presets WHERE id = ?1",
-                params![preset_id],
-                |row| row.get(0),
-            )?;
-            if existing > 0 {
-                return Err(anyhow!("已经存在同名技能组合：{}", trimmed_name));
-            }
-        }
-        conn.execute(
-            "INSERT INTO presets (id, name, description) VALUES (?1, ?2, ?3)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description",
-            params![preset_id, trimmed_name, description.trim()],
-        )?;
-        conn.execute(
-            "DELETE FROM preset_skills WHERE preset_id = ?1",
-            params![preset_id],
-        )?;
-        for skill_id in skill_ids {
-            conn.execute(
-                "INSERT OR IGNORE INTO preset_skills (preset_id, skill_id) VALUES (?1, ?2)",
-                params![preset_id, skill_id],
-            )?;
-        }
-        Ok(preset_id)
-    }
-
-    pub fn delete_preset(&self, id: &str) -> Result<()> {
-        let conn = self.connection()?;
-        conn.execute(
-            "DELETE FROM preset_skills WHERE preset_id = ?1",
-            params![id],
-        )?;
-        conn.execute("DELETE FROM presets WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
     pub fn set_skill_tags(&self, skill_id: &str, tags: &[String]) -> Result<()> {
         let conn = self.connection()?;
         conn.execute(
@@ -873,15 +599,6 @@ impl Store {
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .context("无法读取标签列表")
-    }
-
-    pub fn get_skill_tags(&self, skill_id: &str) -> Result<Vec<String>> {
-        let conn = self.connection()?;
-        let mut stmt =
-            conn.prepare("SELECT tag FROM skill_tags WHERE skill_id = ?1 ORDER BY tag")?;
-        let rows = stmt.query_map(params![skill_id], |row| row.get::<_, String>(0))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .context("无法读取技能标签")
     }
 
     pub fn get_all_tags_info(&self) -> Result<Vec<TagInfo>> {
@@ -981,100 +698,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn onboarding_status(&self) -> Result<OnboardingStatus> {
-        let conn = self.connection()?;
-        let value: Option<String> = conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = 'onboarding_completed'",
-                [],
-                |row| row.get(0),
-            )
-            .ok();
-        Ok(OnboardingStatus {
-            completed: matches!(value.as_deref(), Some("true")),
-        })
-    }
-
-    pub fn set_onboarding_completed(&self, value: bool) -> Result<()> {
-        let conn = self.connection()?;
-        let stored = if value { "true" } else { "false" };
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('onboarding_completed', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![stored],
-        )?;
-        Ok(())
-    }
-
-    pub fn list_unmanaged_in_targets(&self) -> Result<Vec<TargetStatus>> {
-        let targets = self.load_targets()?;
-        let skills = self.scan_library_skills()?;
-        let mut result = Vec::new();
-        for target in &targets {
-            let skills_path = compute_skills_path(&target.path);
-            if !skills_path.exists() {
-                continue;
-            }
-            let statuses = self.scan_target_root(&skills, &skills_path, target)?;
-            for status in statuses {
-                if is_importable_unmanaged_status(&status) {
-                    result.push(status);
-                }
-            }
-        }
-        Ok(result)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Database migration helpers
-// ---------------------------------------------------------------------------
-
-fn migrate_old_tables_to_targets(conn: &Connection) -> Result<()> {
-    let already: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            params![TARGETS_TABLE_MIGRATION_KEY],
-            |row| row.get(0),
-        )
-        .ok();
-    if matches!(already.as_deref(), Some("true")) {
-        return Ok(());
-    }
-
-    // Check if agents table has the 'enabled' column before using it
-    let agents_has_enabled: bool = conn
-        .prepare("SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='enabled'")?
-        .query_row([], |row| row.get::<_, i32>(0))
-        .unwrap_or(0)
-        > 0;
-
-    if agents_has_enabled {
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO targets (id, name, path, is_default)
-             SELECT id, name, global_path, CASE WHEN id = 'agents' THEN 1 ELSE 0 END
-             FROM agents WHERE enabled = 1",
-        )?;
-    } else {
-        conn.execute_batch(
-            "INSERT OR IGNORE INTO targets (id, name, path, is_default)
-             SELECT id, name, global_path, CASE WHEN id = 'agents' THEN 1 ELSE 0 END
-             FROM agents",
-        )?;
-    }
-
-    conn.execute_batch(
-        "INSERT OR IGNORE INTO targets (id, name, path, is_default)
-         SELECT id, name, path, 0 FROM projects",
-    )?;
-
-    conn.execute(
-        "INSERT INTO settings (key, value) VALUES (?1, 'true')
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![TARGETS_TABLE_MIGRATION_KEY],
-    )?;
-
-    Ok(())
 }
 
 fn sync_default_target(conn: &Connection) -> Result<()> {
@@ -1094,210 +717,6 @@ fn sync_default_target(conn: &Connection) -> Result<()> {
         ],
     )?;
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Onboarding project scanning
-// ---------------------------------------------------------------------------
-
-struct OnboardingProjectScore {
-    score: usize,
-    reasons: Vec<String>,
-}
-
-fn onboarding_document_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(document_dir) = dirs::document_dir() {
-        push_unique_path(&mut roots, document_dir);
-    }
-    if let Some(home) = dirs::home_dir() {
-        push_unique_path(&mut roots, home.join("Documents"));
-        push_unique_path(&mut roots, home.join("文稿"));
-    }
-    roots
-}
-
-fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if !paths.iter().any(|existing| existing == &path) {
-        paths.push(path);
-    }
-}
-
-fn collect_onboarding_candidate_dirs(root: &Path) -> Vec<PathBuf> {
-    let mut result = Vec::new();
-    for path in read_limited_child_dirs(root) {
-        if should_ignore_project_scan_dir(&path) {
-            continue;
-        }
-        if is_project_grouping_dir(&path) {
-            for child in read_limited_child_dirs(&path) {
-                if !should_ignore_project_scan_dir(&child) {
-                    result.push(child);
-                }
-            }
-        }
-        result.push(path);
-    }
-    result
-}
-
-fn read_limited_child_dirs(root: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut result = Vec::new();
-    for entry in entries.take(ONBOARDING_PROJECT_SCAN_LIMIT).flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            result.push(entry.path());
-        }
-    }
-    result
-}
-
-fn should_ignore_project_scan_dir(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let lower = name.to_ascii_lowercase();
-    name.starts_with('.')
-        || matches!(
-            lower.as_str(),
-            "node_modules"
-                | "target"
-                | "dist"
-                | "build"
-                | "out"
-                | "library"
-                | "applications"
-                | "movies"
-                | "music"
-                | "pictures"
-                | "downloads"
-        )
-}
-
-fn is_project_grouping_dir(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let lower = name.to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "project"
-            | "projects"
-            | "workspace"
-            | "workspaces"
-            | "code"
-            | "codes"
-            | "repo"
-            | "repos"
-            | "repositories"
-            | "dev"
-            | "developer"
-            | "work"
-    ) || matches!(name.as_str(), "项目" | "代码" | "开发" | "工作区")
-}
-
-fn score_onboarding_project_dir(path: &Path) -> Option<OnboardingProjectScore> {
-    let mut score = 0usize;
-    let mut reasons = Vec::new();
-    let skill_roots = [
-        ".codex/skills",
-        ".claude/skills",
-        ".trae-cn/skills",
-        ".aiden/skills",
-        ".agents/skills",
-    ];
-    let agent_roots = [".codex", ".claude", ".trae-cn", ".aiden", ".agents"];
-    let rule_files = ["AGENTS.md", "CLAUDE.md"];
-    let project_markers = [
-        ".git",
-        "package.json",
-        "Cargo.toml",
-        "pyproject.toml",
-        "go.mod",
-        "pnpm-workspace.yaml",
-        "yarn.lock",
-    ];
-
-    let skill_root_count = skill_roots
-        .iter()
-        .filter(|relative| path.join(relative).is_dir())
-        .count();
-    if skill_root_count > 0 {
-        score += 70;
-        reasons.push(format!("发现 {} 个项目级 Skill 目录", skill_root_count));
-    }
-
-    let agent_root_count = agent_roots
-        .iter()
-        .filter(|relative| path.join(relative).exists())
-        .count();
-    if agent_root_count > 0 {
-        score += 25;
-        reasons.push("发现 Agent 工作痕迹".to_string());
-    }
-
-    let rule_file_count = rule_files
-        .iter()
-        .filter(|relative| path.join(relative).is_file())
-        .count();
-    if rule_file_count > 0 {
-        score += 24;
-        reasons.push("发现 Agent 协作规则".to_string());
-    }
-
-    let project_marker_count = project_markers
-        .iter()
-        .filter(|relative| path.join(relative).exists())
-        .count();
-    if project_marker_count > 0 {
-        score += 16;
-        reasons.push("像项目根目录".to_string());
-    }
-
-    if has_project_name_hint(path) {
-        score += 4;
-    }
-
-    (!reasons.is_empty()).then_some(OnboardingProjectScore { score, reasons })
-}
-
-fn has_project_name_hint(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let lower = name.to_ascii_lowercase();
-    lower.contains("project")
-        || lower.contains("workspace")
-        || lower.contains("repo")
-        || name.contains("项目")
-        || name.contains("产品")
-}
-
-fn normalize_existing_path(path: &Path) -> Option<String> {
-    path.canonicalize()
-        .ok()
-        .map(|value| value.to_string_lossy().to_string())
-}
-
-fn is_importable_unmanaged_status(status: &TargetStatus) -> bool {
-    if status.status != SkillStatus::Unmanaged {
-        return false;
-    }
-    let target_path = Path::new(&status.target_path);
-    target_path.join("SKILL.md").exists()
-        || status
-            .link_target
-            .as_deref()
-            .map(|path| Path::new(path).join("SKILL.md").exists())
-            .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1612,15 +1031,8 @@ fn parse_tag_lines(lines: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn load_preset_skills(conn: &Connection, preset_id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare("SELECT skill_id FROM preset_skills WHERE preset_id = ?1 ORDER BY skill_id")?;
-    let rows = stmt.query_map(params![preset_id], |row| row.get(0))?;
-    rows.collect()
-}
-
 // ---------------------------------------------------------------------------
-// ID & issue key helpers
+// ID helpers
 // ---------------------------------------------------------------------------
 
 fn stable_id(value: &str) -> String {
@@ -1654,40 +1066,6 @@ fn status_id(skill_name: &str, target_id: &str) -> String {
     format!("{}-{}", target_id, skill_name)
 }
 
-fn apply_issue_metadata(statuses: &mut Vec<TargetStatus>, ignored_issue_keys: &HashSet<String>) {
-    for status in statuses.iter_mut() {
-        if !is_issue_status(&status.status) {
-            continue;
-        }
-        let issue_key = issue_key_for_status(status);
-        status.ignored = ignored_issue_keys.contains(&issue_key);
-        status.issue_key = Some(issue_key);
-    }
-    statuses.retain(|status| !status.ignored);
-}
-
-fn is_issue_status(status: &SkillStatus) -> bool {
-    matches!(
-        status,
-        SkillStatus::Unmanaged
-            | SkillStatus::Conflict
-            | SkillStatus::Broken
-            | SkillStatus::PathMissing
-            | SkillStatus::Invalid
-    )
-}
-
-fn issue_key_for_status(status: &TargetStatus) -> String {
-    format!(
-        "status={:?}|target={}|skill={}|path={}|link={}",
-        status.status,
-        status.target_id,
-        status.skill_name,
-        status.target_path,
-        status.link_target.as_deref().unwrap_or("")
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1695,103 +1073,6 @@ fn issue_key_for_status(status: &TargetStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
-
-    fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "skill-hub-onboarding-{}-{}",
-            name,
-            std::process::id()
-        ));
-        if root.exists() {
-            let _ = fs::remove_dir_all(&root);
-        }
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    #[test]
-    fn project_candidate_scan_returns_empty_for_empty_root() {
-        let root = temp_root("empty");
-        let candidates = collect_onboarding_candidate_dirs(&root);
-        let _ = fs::remove_dir_all(&root);
-        assert!(candidates.is_empty());
-    }
-
-    #[test]
-    fn project_candidate_scan_tolerates_unreadable_root() {
-        let root = temp_root("unreadable");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
-        let candidates = read_limited_child_dirs(&root);
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let _ = fs::remove_dir_all(&root);
-        assert!(candidates.is_empty());
-    }
-
-    #[test]
-    fn project_candidate_scan_scores_agent_workspace() {
-        let root = temp_root("candidate");
-        let project = root.join("Projects").join("ShadowProduct");
-        fs::create_dir_all(project.join(".codex").join("skills")).unwrap();
-        fs::write(project.join("AGENTS.md"), "# Rules").unwrap();
-        fs::write(
-            project.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\n",
-        )
-        .unwrap();
-
-        let candidates = collect_onboarding_candidate_dirs(&root);
-        let score = score_onboarding_project_dir(&project).unwrap();
-        let _ = fs::remove_dir_all(&root);
-
-        assert!(candidates.iter().any(|candidate| candidate == &project));
-        assert!(score.score >= ONBOARDING_PROJECT_RECOMMENDED_SCORE);
-    }
-
-    #[test]
-    fn project_candidate_scan_scores_agents_workspace() {
-        let root = temp_root("agents-candidate");
-        let project = root.join("Projects").join("AgentsProduct");
-        fs::create_dir_all(project.join(".agents").join("skills")).unwrap();
-        fs::write(project.join("package.json"), "{}").unwrap();
-
-        let candidates = collect_onboarding_candidate_dirs(&root);
-        let score = score_onboarding_project_dir(&project).unwrap();
-        let _ = fs::remove_dir_all(&root);
-
-        assert!(candidates.iter().any(|candidate| candidate == &project));
-        assert!(score.score >= ONBOARDING_PROJECT_RECOMMENDED_SCORE);
-    }
-
-    #[test]
-    fn onboarding_unmanaged_candidate_requires_skill_md() {
-        let root = temp_root("unmanaged");
-        let target = root.join("readme-only");
-        fs::create_dir_all(&target).unwrap();
-        fs::write(target.join("README.md"), "# Not enough").unwrap();
-        let mut status = TargetStatus {
-            id: "id".to_string(),
-            skill_id: "readme-only".to_string(),
-            skill_name: "readme-only".to_string(),
-            display_name: "readme-only".to_string(),
-            description: String::new(),
-            target_id: "agents".to_string(),
-            target_name: "全局".to_string(),
-            status: SkillStatus::Unmanaged,
-            target_path: target.to_string_lossy().to_string(),
-            link_target: None,
-            issue: None,
-            issue_key: None,
-            ignored: false,
-            root_exists: true,
-        };
-
-        assert!(!is_importable_unmanaged_status(&status));
-        fs::write(target.join("SKILL.md"), "---\nname: readme-only\n---\n").unwrap();
-        status.target_path = target.to_string_lossy().to_string();
-        assert!(is_importable_unmanaged_status(&status));
-        let _ = fs::remove_dir_all(&root);
-    }
 
     #[test]
     fn compute_skills_path_appends_when_needed() {

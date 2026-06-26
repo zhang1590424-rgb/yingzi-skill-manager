@@ -19,8 +19,6 @@ interface RawAppState {
     rootExists: boolean;
     statuses: RawTargetStatus[];
   }>;
-  presets: Array<{ id: string; name: string; description: string; skillIds: string[] }>;
-  issues: string[];
 }
 
 interface RawTargetStatus {
@@ -31,7 +29,6 @@ interface RawTargetStatus {
   description: string;
   status: SkillStatusRaw;
   targetPath: string;
-  issue?: string | null;
 }
 
 function transformState(raw: RawAppState): AppState {
@@ -39,15 +36,11 @@ function transformState(raw: RawAppState): AppState {
   const targetStatuses = new Map<string, TargetSkillStatus[]>();
 
   for (const workspace of raw.workspaces) {
-    const applied = workspace.statuses.filter(s => s.status === "enabled").length;
     targets.push({
       id: workspace.targetId,
       name: workspace.targetName,
       path: workspace.targetPath,
       isDefault: raw.targets.find(t => t.id === workspace.targetId)?.isDefault ?? false,
-      exists: workspace.targetExists,
-      appliedCount: applied,
-      totalCount: raw.skills.length,
     });
     targetStatuses.set(workspace.targetId, workspace.statuses.map(s => ({
       id: s.id,
@@ -56,9 +49,6 @@ function transformState(raw: RawAppState): AppState {
       displayName: s.displayName,
       description: s.description,
       status: mapStatus(s.status),
-      rawStatus: s.status,
-      targetPath: s.targetPath,
-      issue: s.issue,
     })));
   }
 
@@ -68,7 +58,6 @@ function transformState(raw: RawAppState): AppState {
     skills: raw.skills,
     targets,
     targetStatuses,
-    issues: raw.issues,
   };
 }
 
@@ -116,21 +105,6 @@ export async function withdrawSkill(
 ): Promise<OperationReport> {
   if (!isTauriRuntime()) return { changed: targets.length, skipped: 0, conflicts: [], errors: [] };
   return invoke<OperationReport>("withdraw_skill", { skillId, targets });
-}
-
-export async function adoptSkillFromTarget(
-  targetId: string,
-  skillName: string,
-): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState();
-  const raw = await invoke<RawAppState>("adopt_skill_from_target", { targetId, skillName });
-  return transformState(raw);
-}
-
-export async function removeUnmanagedSkill(targetPath: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState();
-  const raw = await invoke<RawAppState>("remove_unmanaged_skill", { targetPath });
-  return transformState(raw);
 }
 
 export async function addTarget(path: string): Promise<AppState> {
@@ -218,21 +192,21 @@ function isTauriRuntime() {
 
 function mockState(): AppState {
   const skills: Skill[] = [
-    { id: "brainstorming", name: "brainstorming", displayName: "Brainstorming", description: "开发或创作前先澄清需求和设计", path: "/mock/skills/brainstorming", hasSkillMd: true, tags: ["产品", "创意"], enabledCount: 3, issueCount: 0, contentPreview: "# Brainstorming" },
-    { id: "impeccable", name: "impeccable", displayName: "Impeccable", description: "产品界面设计、打磨和审计", path: "/mock/skills/impeccable", hasSkillMd: true, tags: ["设计"], enabledCount: 2, issueCount: 0, contentPreview: "# Impeccable" },
-    { id: "code-review", name: "code-review", displayName: "代码审查", description: "检查代码变更里的逻辑和性能风险", path: "/mock/skills/code-review", hasSkillMd: true, tags: ["开发", "质量"], enabledCount: 5, issueCount: 0, contentPreview: "# 代码审查" },
-    { id: "product-research", name: "product-research", displayName: "产品调研", description: "整理竞品、用户场景和需求判断", path: "/mock/skills/product-research", hasSkillMd: true, tags: ["产品"], enabledCount: 1, issueCount: 1, contentPreview: "# 产品调研" },
-    { id: "lark-doc", name: "lark-doc", displayName: "lark-doc", description: "读取和编辑飞书文档内容", path: "/mock/skills/lark-doc", hasSkillMd: true, tags: ["飞书"], enabledCount: 0, issueCount: 0, contentPreview: "# lark-doc" },
-    { id: "lark-sheets", name: "lark-sheets", displayName: "lark-sheets", description: "创建和操作电子表格", path: "/mock/skills/lark-sheets", hasSkillMd: true, tags: ["飞书"], enabledCount: 1, issueCount: 0, contentPreview: "# lark-sheets" },
-    { id: "lark-calendar", name: "lark-calendar", displayName: "lark-calendar", description: "管理日历日程和会议室", path: "/mock/skills/lark-calendar", hasSkillMd: true, tags: ["飞书"], enabledCount: 1, issueCount: 0, contentPreview: "# lark-calendar" },
-    { id: "session-wrap-up", name: "session-wrap-up", displayName: "会话收尾", description: "把实质性改动同步到项目文档和长期记忆", path: "/mock/skills/session-wrap-up", hasSkillMd: true, tags: ["文档"], enabledCount: 2, issueCount: 0, contentPreview: "# 会话收尾" },
-    { id: "ab-test-setup", name: "ab-test-setup", displayName: "A/B Test Setup", description: "设计 A/B 测试方案", path: "/mock/skills/ab-test-setup", hasSkillMd: true, tags: ["产品"], enabledCount: 0, issueCount: 0, contentPreview: "# A/B Test Setup" },
+    { id: "brainstorming", name: "brainstorming", displayName: "Brainstorming", description: "开发或创作前先澄清需求和设计", path: "/mock/skills/brainstorming", tags: ["产品", "创意"], enabledCount: 3, issueCount: 0, contentPreview: "# Brainstorming" },
+    { id: "impeccable", name: "impeccable", displayName: "Impeccable", description: "产品界面设计、打磨和审计", path: "/mock/skills/impeccable", tags: ["设计"], enabledCount: 2, issueCount: 0, contentPreview: "# Impeccable" },
+    { id: "code-review", name: "code-review", displayName: "代码审查", description: "检查代码变更里的逻辑和性能风险", path: "/mock/skills/code-review", tags: ["开发", "质量"], enabledCount: 5, issueCount: 0, contentPreview: "# 代码审查" },
+    { id: "product-research", name: "product-research", displayName: "产品调研", description: "整理竞品、用户场景和需求判断", path: "/mock/skills/product-research", tags: ["产品"], enabledCount: 1, issueCount: 1, contentPreview: "# 产品调研" },
+    { id: "lark-doc", name: "lark-doc", displayName: "lark-doc", description: "读取和编辑飞书文档内容", path: "/mock/skills/lark-doc", tags: ["飞书"], enabledCount: 0, issueCount: 0, contentPreview: "# lark-doc" },
+    { id: "lark-sheets", name: "lark-sheets", displayName: "lark-sheets", description: "创建和操作电子表格", path: "/mock/skills/lark-sheets", tags: ["飞书"], enabledCount: 1, issueCount: 0, contentPreview: "# lark-sheets" },
+    { id: "lark-calendar", name: "lark-calendar", displayName: "lark-calendar", description: "管理日历日程和会议室", path: "/mock/skills/lark-calendar", tags: ["飞书"], enabledCount: 1, issueCount: 0, contentPreview: "# lark-calendar" },
+    { id: "session-wrap-up", name: "session-wrap-up", displayName: "会话收尾", description: "把实质性改动同步到项目文档和长期记忆", path: "/mock/skills/session-wrap-up", tags: ["文档"], enabledCount: 2, issueCount: 0, contentPreview: "# 会话收尾" },
+    { id: "ab-test-setup", name: "ab-test-setup", displayName: "A/B Test Setup", description: "设计 A/B 测试方案", path: "/mock/skills/ab-test-setup", tags: ["产品"], enabledCount: 0, issueCount: 0, contentPreview: "# A/B Test Setup" },
   ];
 
   const targets: Target[] = [
-    { id: "agents", name: "全局", path: "~/.agents/skills", isDefault: true, exists: true, appliedCount: 5, totalCount: 9 },
-    { id: "project-skill-manager", name: "skill管理器", path: "~/项目/skill管理器", isDefault: false, exists: true, appliedCount: 3, totalCount: 9 },
-    { id: "project-knowledge", name: "知识管理", path: "~/项目/知识管理", isDefault: false, exists: true, appliedCount: 2, totalCount: 9 },
+    { id: "agents", name: "全局", path: "~/.agents/skills", isDefault: true },
+    { id: "project-skill-manager", name: "skill管理器", path: "~/项目/skill管理器", isDefault: false },
+    { id: "project-knowledge", name: "知识管理", path: "~/项目/知识管理", isDefault: false },
   ];
 
   const targetStatuses = new Map<string, TargetSkillStatus[]>();
@@ -243,12 +217,8 @@ function mockState(): AppState {
       skillName: skill.name,
       displayName: skill.displayName,
       description: skill.description,
-      status: i < target.appliedCount ? "applied" as const : (skill.issueCount > 0 ? "problem" as const : "notApplied" as const),
-      rawStatus: i < target.appliedCount ? "enabled" as const : (skill.issueCount > 0 ? "conflict" as const : "disabled" as const),
-      targetPath: `${target.path}/${skill.name}`,
-      issue: skill.issueCount > 0 && i >= target.appliedCount ? "目标位置已有同名内容" : null,
+      status: i < 3 ? "applied" as const : (skill.issueCount > 0 ? "problem" as const : "notApplied" as const),
     })));
   }
-
-  return { baseDir: "~/.skills-manager", skillsRoot: "~/.skills-manager/skills", skills, targets, targetStatuses, issues: [] };
+  return { baseDir: "~/.skills-manager", skillsRoot: "~/.skills-manager/skills", skills, targets, targetStatuses };
 }

@@ -8,8 +8,6 @@ import {
   deleteSkill,
   deploySkill,
   withdrawSkill,
-  adoptSkillFromTarget,
-  removeUnmanagedSkill,
   addTarget,
   removeTarget,
   openPath,
@@ -71,7 +69,6 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
-  const [showDeploy, setShowDeploy] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; skill: Skill } | null>(null);
   const [knownTags, setKnownTags] = useState<string[]>([]);
   const [targetDropdownOpen, setTargetDropdownOpen] = useState(false);
@@ -525,15 +522,6 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
           onDone={async () => { await refresh(); setShowImport(false); }}
         />
       )}
-      {showDeploy && selected && (
-        <DeployModal
-          skill={selected}
-          targets={state.targets}
-          onClose={() => setShowDeploy(false)}
-          onDone={refresh}
-        />
-      )}
-
       {/* Settings Drawer */}
       {showSettings && (
         <SettingsDrawer
@@ -1317,84 +1305,6 @@ function ImportModal({
         <p className="import-note">导入后进入主库，需再手动分发到目标目录。</p>
 
         <div className="import-modal-footer">
-          <button className="btn btn-secondary" onClick={onClose}>取消</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DeployModal({
-  skill,
-  targets,
-  onClose,
-  onDone,
-}: {
-  skill: Skill;
-  targets: Target[];
-  onClose: () => void;
-  onDone: () => Promise<void>;
-}) {
-  const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [deploying, setDeploying] = useState(false);
-
-  const toggle = (id: string) => {
-    setChecked(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const handleDeploy = async () => {
-    if (checked.size === 0) return;
-    setDeploying(true);
-    const deployTargets = targets
-      .filter(t => checked.has(t.id))
-      .map(t => ({ targetId: t.id }));
-    await deploySkill(skill.id, deployTargets, true);
-    await onDone();
-    onClose();
-  };
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3>应用「{skill.displayName}」到…</h3>
-        <div style={{ marginBottom: "16px" }}>
-          {targets.map(t => (
-            <label
-              key={t.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                padding: "8px 0",
-                fontSize: "12px",
-                cursor: "pointer",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={checked.has(t.id)}
-                onChange={() => toggle(t.id)}
-              />
-              <span style={{ fontWeight: 500 }}>{t.name}</span>
-              <span style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)", fontSize: "10px" }}>
-                {shortenPath(t.path)}
-              </span>
-            </label>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            className="btn btn-primary"
-            onClick={handleDeploy}
-            disabled={checked.size === 0 || deploying}
-          >
-            {deploying ? "应用中…" : `应用到 ${checked.size} 个目标`}
-          </button>
           <button className="btn btn-secondary" onClick={onClose}>取消</button>
         </div>
       </div>
