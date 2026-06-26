@@ -123,6 +123,11 @@ impl Store {
               issue_key TEXT PRIMARY KEY,
               ignored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS skill_tags (
+              skill_id TEXT NOT NULL,
+              tag TEXT NOT NULL,
+              PRIMARY KEY (skill_id, tag)
+            );
             "#,
         )?;
 
@@ -146,6 +151,26 @@ impl Store {
                 Vec::new()
             }
         };
+
+        // Merge user-defined tags from database
+        let conn_for_tags = self.connection()?;
+        let mut tag_stmt = conn_for_tags.prepare("SELECT skill_id, tag FROM skill_tags ORDER BY skill_id, tag")?;
+        let tag_rows = tag_stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut db_tags: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for row in tag_rows {
+            if let Ok((sid, tag)) = row {
+                db_tags.entry(sid).or_default().push(tag);
+            }
+        }
+        for skill in &mut skills {
+            if let Some(tags) = db_tags.get(&skill.id) {
+                // Database tags override file-sourced tags
+                skill.tags = tags.clone();
+            }
+        }
+
         let presets = self.load_presets()?;
 
         let mut global_workspaces = Vec::new();
@@ -937,6 +962,33 @@ impl Store {
 
     pub fn detect_default_agents(&self) -> Result<Vec<DetectedAgent>> {
         default_agent_definitions()
+    }
+
+    pub fn set_skill_tags(&self, skill_id: &str, tags: &[String]) -> Result<()> {
+        let conn = self.connection()?;
+        conn.execute("DELETE FROM skill_tags WHERE skill_id = ?1", params![skill_id])?;
+        let mut stmt = conn.prepare("INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)")?;
+        for tag in tags {
+            let trimmed = tag.trim();
+            if !trimmed.is_empty() {
+                stmt.execute(params![skill_id, trimmed])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_all_tags(&self) -> Result<Vec<String>> {
+        let conn = self.connection()?;
+        let mut stmt = conn.prepare("SELECT DISTINCT tag FROM skill_tags ORDER BY tag")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().context("无法读取标签列表")
+    }
+
+    pub fn get_skill_tags(&self, skill_id: &str) -> Result<Vec<String>> {
+        let conn = self.connection()?;
+        let mut stmt = conn.prepare("SELECT tag FROM skill_tags WHERE skill_id = ?1 ORDER BY tag")?;
+        let rows = stmt.query_map(params![skill_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().context("无法读取技能标签")
     }
 
     pub fn set_agent_enabled(&self, agent_id: &str, enabled: bool) -> Result<()> {

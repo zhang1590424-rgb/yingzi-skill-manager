@@ -19,6 +19,7 @@ pub fn run() {
             commands::deploy_skill,
             commands::withdraw_skill,
             commands::adopt_skill_from_target,
+            commands::remove_unmanaged_skill,
             commands::add_project,
             commands::suggest_onboarding_projects,
             commands::add_agent,
@@ -35,7 +36,9 @@ pub fn run() {
             commands::list_unmanaged_for_onboarding,
             commands::bulk_adopt_skills,
             commands::ignore_issue_keys,
-            commands::resolve_broken_issue_keys
+            commands::resolve_broken_issue_keys,
+            commands::set_skill_tags,
+            commands::get_all_tags
         ])
         .run(tauri::generate_context!())
         .expect("failed to run skill hub");

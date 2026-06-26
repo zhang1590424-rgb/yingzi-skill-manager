@@ -341,6 +341,18 @@ fn import_skill_source(store: &Store, source: &Path, name: &str) -> Result<Strin
         return Err(anyhow!("已存在同名技能：{}", skill_id));
     }
     copy_dir_all(source, &target)?;
+
+    // Persist SKILL.md tags into the skill_tags table as initial values
+    let skill_md = target.join("SKILL.md");
+    if skill_md.exists() {
+        if let Ok(content) = fs::read_to_string(&skill_md) {
+            let tags = parse_skill_md_tags(&content);
+            if !tags.is_empty() {
+                let _ = store.set_skill_tags(&skill_id, &tags);
+            }
+        }
+    }
+
     Ok(skill_id)
 }
 
@@ -462,6 +474,19 @@ fn adopt_skill_internal(
     }
     create_dir_symlink(&library_target, &source)?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn remove_unmanaged_skill(target_path: String) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        let path = PathBuf::from(&target_path);
+        if !path.exists() && fs::symlink_metadata(&path).is_err() {
+            return Err(anyhow!("目标路径不存在：{}", target_path));
+        }
+        remove_path(&path)?;
+        store.load_app_state()
+    })
 }
 
 #[tauri::command]
@@ -1127,6 +1152,70 @@ fn run<T>(operation: impl FnOnce() -> Result<T>) -> Result<T, String> {
     operation().map_err(|error| format!("{:#}", error))
 }
 
+/// Extract tags from SKILL.md frontmatter for persisting to the database on import.
+fn parse_skill_md_tags(content: &str) -> Vec<String> {
+    let trimmed = content.trim_start();
+    let mut lines = trimmed.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return Vec::new();
+    }
+    let mut collecting_tags = false;
+    let mut tag_lines: Vec<String> = Vec::new();
+    let mut inline_tags: Vec<String> = Vec::new();
+
+    for line in lines {
+        let trimmed_line = line.trim();
+        if trimmed_line == "---" {
+            break;
+        }
+        let is_top_level = !line.starts_with(' ') && !line.starts_with('\t');
+        if is_top_level {
+            if let Some((key, value)) = trimmed_line.split_once(':') {
+                let key = key.trim();
+                let value = value.trim();
+                collecting_tags = false;
+                if key == "tags" {
+                    if value.is_empty() {
+                        collecting_tags = true;
+                        tag_lines.clear();
+                    } else {
+                        inline_tags = parse_inline_tag_value(value);
+                    }
+                }
+                continue;
+            }
+        }
+        if collecting_tags {
+            tag_lines.push(trimmed_line.to_string());
+        }
+    }
+
+    if !inline_tags.is_empty() {
+        return inline_tags;
+    }
+    tag_lines
+        .iter()
+        .filter_map(|line| {
+            let value = line.trim().trim_start_matches('-').trim();
+            let value = value.trim_matches('"').trim_matches('\'').trim();
+            (!value.is_empty()).then(|| value.to_string())
+        })
+        .collect()
+}
+
+fn parse_inline_tag_value(value: &str) -> Vec<String> {
+    let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(value);
+    inner
+        .split(',')
+        .map(|tag| tag.trim().trim_matches('"').trim_matches('\'').trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
 #[tauri::command]
 pub fn get_onboarding_status() -> Result<OnboardingStatus, String> {
     run(|| Store::new()?.onboarding_status())
@@ -1201,6 +1290,20 @@ pub fn resolve_broken_issue_keys(issue_keys: Vec<String>) -> Result<OperationRep
         let store = Store::new()?;
         store.resolve_broken_issue_keys(&issue_keys)
     })
+}
+
+#[tauri::command]
+pub fn set_skill_tags(skill_id: String, tags: Vec<String>) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.set_skill_tags(&skill_id, &tags)?;
+        store.load_app_state()
+    })
+}
+
+#[tauri::command]
+pub fn get_all_tags() -> Result<Vec<String>, String> {
+    run(|| Store::new()?.get_all_tags())
 }
 
 #[cfg(test)]

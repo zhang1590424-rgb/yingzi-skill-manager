@@ -1,69 +1,141 @@
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  AppState,
-  BulkAdoptItem,
-  BulkAdoptReport,
-  DeployTarget,
-  DetectedAgent,
-  OnboardingStatus,
-  OperationReport,
-  PackageImportReport,
-  ProjectSuggestion,
-  SkillPackageScan,
-  TargetStatus,
-} from "./types";
+import type { AppState, Skill, Target, TargetSkillStatus, SkillStatusRaw } from "./types";
+import { mapStatus } from "./types";
+
+// Raw backend types (unchanged from Rust)
+interface RawAppState {
+  baseDir: string;
+  skillsRoot: string;
+  databasePath: string;
+  configPath: string;
+  agents: Array<{ id: string; name: string; globalPath: string; enabled: boolean; pathExists: boolean }>;
+  projects: Array<{ id: string; name: string; path: string; exists: boolean }>;
+  skills: Skill[];
+  globalWorkspaces: Array<{
+    agentId: string;
+    agentName: string;
+    rootPath: string;
+    rootExists: boolean;
+    statuses: RawTargetStatus[];
+  }>;
+  projectWorkspaces: Array<{
+    projectId: string;
+    projectName: string;
+    projectPath: string;
+    projectExists: boolean;
+    rootPath: string;
+    rootExists: boolean;
+    statuses: RawTargetStatus[];
+  }>;
+  presets: Array<{ id: string; name: string; description: string; skillIds: string[] }>;
+  issues: string[];
+}
+
+interface RawTargetStatus {
+  id: string;
+  skillId: string;
+  skillName: string;
+  displayName: string;
+  description: string;
+  status: SkillStatusRaw;
+  targetPath: string;
+  issue?: string | null;
+}
+
+function transformState(raw: RawAppState): AppState {
+  const targets: Target[] = [];
+  const targetStatuses = new Map<string, TargetSkillStatus[]>();
+
+  // Global directories as targets
+  for (const workspace of raw.globalWorkspaces) {
+    const targetId = `global-${workspace.agentId}`;
+    const applied = workspace.statuses.filter(s => s.status === "enabled").length;
+    targets.push({
+      id: targetId,
+      kind: "global",
+      name: workspace.agentName,
+      path: workspace.rootPath,
+      exists: workspace.rootExists,
+      appliedCount: applied,
+      totalCount: raw.skills.length,
+    });
+    targetStatuses.set(targetId, workspace.statuses.map(s => ({
+      id: s.id,
+      skillId: s.skillId,
+      skillName: s.skillName,
+      displayName: s.displayName,
+      description: s.description,
+      status: mapStatus(s.status),
+      rawStatus: s.status,
+      targetPath: s.targetPath,
+      issue: s.issue,
+    })));
+  }
+
+  // Projects as targets
+  for (const workspace of raw.projectWorkspaces) {
+    const targetId = `project-${workspace.projectId}`;
+    const applied = workspace.statuses.filter(s => s.status === "enabled").length;
+    targets.push({
+      id: targetId,
+      kind: "project",
+      name: workspace.projectName,
+      path: workspace.projectPath,
+      exists: workspace.projectExists,
+      appliedCount: applied,
+      totalCount: raw.skills.length,
+    });
+    targetStatuses.set(targetId, workspace.statuses.map(s => ({
+      id: s.id,
+      skillId: s.skillId,
+      skillName: s.skillName,
+      displayName: s.displayName,
+      description: s.description,
+      status: mapStatus(s.status),
+      rawStatus: s.status,
+      targetPath: s.targetPath,
+      issue: s.issue,
+    })));
+  }
+
+  return {
+    baseDir: raw.baseDir,
+    skillsRoot: raw.skillsRoot,
+    skills: raw.skills,
+    targets,
+    targetStatuses,
+    issues: raw.issues,
+  };
+}
 
 export async function getAppState(): Promise<AppState> {
   if (!isTauriRuntime()) return mockState();
-  return invoke<AppState>("get_app_state");
-}
-
-export async function createSkill(name: string, description: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(name, description);
-  return invoke<AppState>("create_skill", { name, description });
+  const raw = await invoke<RawAppState>("get_app_state");
+  return transformState(raw);
 }
 
 export async function importSkill(sourcePath: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(sourcePath);
-  return invoke<AppState>("import_skill", { sourcePath });
-}
-
-export async function scanSkillPackage(packagePath: string): Promise<SkillPackageScan> {
-  if (!isTauriRuntime()) {
-    const skills = mockPackageSkills().map((skill) => ({ ...skill, exists: false }));
-    return { packagePath, skills, ignoredPluginSkills: 0 };
-  }
-  return invoke<SkillPackageScan>("scan_skill_package", { packagePath });
-}
-
-export async function importSkillsFromPackage(
-  packagePath: string,
-  skillIds: string[],
-): Promise<PackageImportReport> {
-  if (!isTauriRuntime()) {
-    return { state: mockState(packagePath), changed: skillIds.length, skipped: 0, errors: [] };
-  }
-  return invoke<PackageImportReport>("import_skills_from_package", { packagePath, skillIds });
-}
-
-export async function scanBuiltinPresetSkills(): Promise<SkillPackageScan> {
-  if (!isTauriRuntime()) {
-    const skills = mockPackageSkills().map((skill) => ({ ...skill, exists: false }));
-    return { packagePath: "builtin", skills, ignoredPluginSkills: 0 };
-  }
-  return invoke<SkillPackageScan>("scan_builtin_preset_skills");
-}
-
-export async function installBuiltinPresetSkills(skillIds: string[]): Promise<PackageImportReport> {
-  if (!isTauriRuntime()) {
-    return { state: mockState("builtin"), changed: skillIds.length, skipped: 0, errors: [] };
-  }
-  return invoke<PackageImportReport>("install_builtin_preset_skills", { skillIds });
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("import_skill", { sourcePath });
+  return transformState(raw);
 }
 
 export async function deleteSkill(skillId: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(skillId);
-  return invoke<AppState>("delete_skill", { skillId });
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("delete_skill", { skillId });
+  return transformState(raw);
+}
+
+interface DeployTarget {
+  agentId?: string | null;
+  projectId?: string | null;
+}
+
+interface OperationReport {
+  changed: number;
+  skipped: number;
+  conflicts: string[];
+  errors: string[];
 }
 
 export async function deploySkill(
@@ -71,7 +143,7 @@ export async function deploySkill(
   targets: DeployTarget[],
   overwrite: boolean,
 ): Promise<OperationReport> {
-  if (!isTauriRuntime()) return mockReport(targets.length || (skillId && overwrite ? 1 : 0));
+  if (!isTauriRuntime()) return { changed: targets.length, skipped: 0, conflicts: [], errors: [] };
   return invoke<OperationReport>("deploy_skill", { skillId, targets, overwrite });
 }
 
@@ -79,310 +151,118 @@ export async function withdrawSkill(
   skillId: string,
   targets: DeployTarget[],
 ): Promise<OperationReport> {
-  if (!isTauriRuntime()) return mockReport(targets.length || (skillId ? 1 : 0));
+  if (!isTauriRuntime()) return { changed: targets.length, skipped: 0, conflicts: [], errors: [] };
   return invoke<OperationReport>("withdraw_skill", { skillId, targets });
 }
 
 export async function adoptSkillFromTarget(
-  agentId: string,
-  projectId: string | null,
+  agentId: string | undefined,
+  projectId: string | undefined,
   skillName: string,
 ): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(agentId, projectId ?? "", skillName);
-  return invoke<AppState>("adopt_skill_from_target", { agentId, projectId, skillName });
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("adopt_skill_from_target", { agentId, projectId, skillName });
+  return transformState(raw);
+}
+
+export async function removeUnmanagedSkill(targetPath: string): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("remove_unmanaged_skill", { targetPath });
+  return transformState(raw);
 }
 
 export async function addProject(path: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(path);
-  return invoke<AppState>("add_project", { path });
-}
-
-export async function suggestOnboardingProjects(): Promise<ProjectSuggestion[]> {
-  if (!isTauriRuntime()) {
-    return [
-      {
-        id: "mock-shadow-project",
-        name: "skill管理器",
-        path: "/Users/bytedance/项目/skill管理器",
-        reason: "发现 Agent 协作规则，像项目根目录",
-        score: 40,
-        recommended: false,
-        alreadyAdded: false,
-      },
-    ];
-  }
-  return invoke<ProjectSuggestion[]>("suggest_onboarding_projects");
-}
-
-export async function addAgent(globalPath: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(globalPath);
-  return invoke<AppState>("add_agent", { globalPath });
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("add_project", { path });
+  return transformState(raw);
 }
 
 export async function removeProject(projectId: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(projectId);
-  return invoke<AppState>("remove_project", { projectId });
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("remove_project", { projectId });
+  return transformState(raw);
 }
 
-export async function removeAgent(agentId: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(agentId);
-  return invoke<AppState>("remove_agent", { agentId });
+export async function addGlobalDir(globalPath: string): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("add_agent", { globalPath });
+  return transformState(raw);
 }
 
-export async function updateAgentPath(agentId: string, path: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(agentId, path);
-  return invoke<AppState>("update_agent_path", { agentId, path });
+export async function removeGlobalDir(agentId: string): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("remove_agent", { agentId });
+  return transformState(raw);
 }
 
-export async function upsertPreset(
-  id: string | null,
-  name: string,
-  description: string,
-  skillIds: string[],
-): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(id ?? "", name, description, skillIds.join(","));
-  return invoke<AppState>("upsert_preset", { id, name, description, skillIds });
+export async function setSkillTags(skillId: string, tags: string[]): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("set_skill_tags", { skillId, tags });
+  return transformState(raw);
 }
 
-export async function deletePreset(id: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(id);
-  return invoke<AppState>("delete_preset", { id });
+export async function getAllTags(): Promise<string[]> {
+  if (!isTauriRuntime()) {
+    return ["产品", "创意", "设计", "开发", "质量", "飞书", "文档"];
+  }
+  return invoke<string[]>("get_all_tags");
 }
 
 export async function openPath(path: string): Promise<void> {
-  if (!isTauriRuntime()) {
-    console.info("openPath", path);
-    return;
-  }
+  if (!isTauriRuntime()) return;
   return invoke<void>("open_path", { path });
 }
 
-export async function getOnboardingStatus(): Promise<OnboardingStatus> {
-  if (!isTauriRuntime()) return { completed: false };
-  return invoke<OnboardingStatus>("get_onboarding_status");
+export async function scanSkillPackage(packagePath: string) {
+  if (!isTauriRuntime()) return { packagePath, skills: [], ignoredPluginSkills: 0 };
+  return invoke("scan_skill_package", { packagePath });
 }
 
-export async function detectDefaultAgents(): Promise<DetectedAgent[]> {
-  if (!isTauriRuntime()) {
-    return [
-      {
-        id: "agents",
-        name: "全局目录",
-        globalPath: "/Users/mock/.agents/skills",
-        projectRelativePath: ".agents/skills",
-        exists: false,
-      },
-    ];
-  }
-  return invoke<DetectedAgent[]>("detect_default_agents");
-}
-
-export async function setAgentEnabled(agentId: string, enabled: boolean): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(agentId, String(enabled));
-  return invoke<AppState>("set_agent_enabled", { agentId, enabled });
-}
-
-export async function setOnboardingCompleted(value: boolean): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(String(value));
-  return invoke<AppState>("set_onboarding_completed", { value });
-}
-
-export async function listUnmanagedForOnboarding(): Promise<TargetStatus[]> {
-  if (!isTauriRuntime()) return [];
-  return invoke<TargetStatus[]>("list_unmanaged_for_onboarding");
-}
-
-export async function bulkAdoptSkills(items: BulkAdoptItem[]): Promise<BulkAdoptReport> {
-  if (!isTauriRuntime()) {
-    return { state: mockState(), changed: items.length, errors: [] };
-  }
-  return invoke<BulkAdoptReport>("bulk_adopt_skills", { items });
-}
-
-export async function ignoreIssueKeys(issueKeys: string[]): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState(issueKeys.join(","));
-  return invoke<AppState>("ignore_issue_keys", { issueKeys });
-}
-
-export async function resolveBrokenIssueKeys(issueKeys: string[]): Promise<OperationReport> {
-  if (!isTauriRuntime()) return mockReport(issueKeys.length);
-  return invoke<OperationReport>("resolve_broken_issue_keys", { issueKeys });
+export async function importSkillsFromPackage(packagePath: string, skillIds: string[]) {
+  if (!isTauriRuntime()) return { state: mockState(), changed: skillIds.length, skipped: 0, errors: [] };
+  const raw = await invoke<{ state: RawAppState; changed: number; skipped: number; errors: string[] }>(
+    "import_skills_from_package", { packagePath, skillIds }
+  );
+  return { ...raw, state: transformState(raw.state) };
 }
 
 function isTauriRuntime() {
   return "__TAURI_INTERNALS__" in window;
 }
 
-function mockReport(changed = 1): OperationReport {
-  return {
-    changed,
-    skipped: 0,
-    conflicts: [],
-    errors: [],
-  };
-}
+function mockState(): AppState {
+  const skills: Skill[] = [
+    { id: "brainstorming", name: "brainstorming", displayName: "Brainstorming", description: "开发或创作前先澄清需求和设计", path: "/mock/skills/brainstorming", hasSkillMd: true, tags: ["产品", "创意"], enabledCount: 3, issueCount: 0, contentPreview: "# Brainstorming" },
+    { id: "impeccable", name: "impeccable", displayName: "Impeccable", description: "产品界面设计、打磨和审计", path: "/mock/skills/impeccable", hasSkillMd: true, tags: ["设计"], enabledCount: 2, issueCount: 0, contentPreview: "# Impeccable" },
+    { id: "code-review", name: "code-review", displayName: "代码审查", description: "检查代码变更里的逻辑和性能风险", path: "/mock/skills/code-review", hasSkillMd: true, tags: ["开发", "质量"], enabledCount: 5, issueCount: 0, contentPreview: "# 代码审查" },
+    { id: "product-research", name: "product-research", displayName: "产品调研", description: "整理竞品、用户场景和需求判断", path: "/mock/skills/product-research", hasSkillMd: true, tags: ["产品"], enabledCount: 1, issueCount: 1, contentPreview: "# 产品调研" },
+    { id: "lark-doc", name: "lark-doc", displayName: "lark-doc", description: "读取和编辑飞书文档内容", path: "/mock/skills/lark-doc", hasSkillMd: true, tags: ["飞书"], enabledCount: 0, issueCount: 0, contentPreview: "# lark-doc" },
+    { id: "lark-sheets", name: "lark-sheets", displayName: "lark-sheets", description: "创建和操作电子表格", path: "/mock/skills/lark-sheets", hasSkillMd: true, tags: ["飞书"], enabledCount: 1, issueCount: 0, contentPreview: "# lark-sheets" },
+    { id: "lark-calendar", name: "lark-calendar", displayName: "lark-calendar", description: "管理日历日程和会议室", path: "/mock/skills/lark-calendar", hasSkillMd: true, tags: ["飞书"], enabledCount: 1, issueCount: 0, contentPreview: "# lark-calendar" },
+    { id: "session-wrap-up", name: "session-wrap-up", displayName: "会话收尾", description: "把实质性改动同步到项目文档和长期记忆", path: "/mock/skills/session-wrap-up", hasSkillMd: true, tags: ["文档"], enabledCount: 2, issueCount: 0, contentPreview: "# 会话收尾" },
+    { id: "ab-test-setup", name: "ab-test-setup", displayName: "A/B Test Setup", description: "设计 A/B 测试方案", path: "/mock/skills/ab-test-setup", hasSkillMd: true, tags: ["产品"], enabledCount: 0, issueCount: 0, contentPreview: "# A/B Test Setup" },
+  ];
 
-function mockPackageSkills() {
-  const skills = [
-    { id: "brainstorming", name: "brainstorming", displayName: "Brainstorming", description: "开发或创作前先澄清需求和设计", category: "产品创意", entryPrefix: "mock/skills/brainstorming" },
-    { id: "office-hours", name: "office-hours", displayName: "Office Hours", description: "前置澄清产品想法、用户和切入点", category: "产品创意", entryPrefix: "mock/skills/office-hours" },
-    { id: "plan-ceo-review", name: "plan-ceo-review", displayName: "Plan CEO Review", description: "用 CEO / Founder 视角评审方案", category: "产品创意", entryPrefix: "mock/skills/plan-ceo-review" },
-    { id: "storyline", name: "storyline", displayName: "故事线", description: "优化文档故事线和表达", category: "产品创意", entryPrefix: "mock/skills/storyline" },
-    { id: "ug-num-strategy", name: "ug-num-strategy", displayName: "激励数值策略", description: "输出激励玩法数值策略方案", category: "需求编写", entryPrefix: "mock/skills/ug-num-strategy" },
-    { id: "ug-prd-review-jc-style", name: "ug-prd-review-jc-style", displayName: "激励产品评审", description: "评审激励产品方案和上线风险", category: "需求编写", entryPrefix: "mock/skills/ug-prd-review-jc-style" },
-    { id: "ab-test-setup", name: "ab-test-setup", displayName: "A/B Test Setup", description: "设计 A/B 测试方案", category: "需求编写", entryPrefix: "mock/skills/ab-test-setup" },
-    { id: "experiment-ux-guard", name: "experiment-ux-guard", displayName: "实验体验把关", description: "检查实验和灰度方案体验风险", category: "需求编写", entryPrefix: "mock/skills/experiment-ux-guard" },
-    { id: "ui-ux-pro-max", name: "ui-ux-pro-max", displayName: "ui-ux-pro-max", description: "UI/UX 参考库", category: "UI 设计", entryPrefix: "mock/skills/ui-ux-pro-max" },
-    { id: "design-taste-skill-pack", name: "design-taste-skill-pack", displayName: "Taste Skill Pack Router", description: "选择前端视觉风格和组件方向", category: "UI 设计", entryPrefix: "mock/skills/design-taste-skill-pack" },
-    { id: "impeccable", name: "impeccable", displayName: "impeccable", description: "产品界面设计、打磨和审计", category: "UI 设计", entryPrefix: "mock/skills/impeccable" },
-    { id: "agent-browser", name: "agent-browser", displayName: "agent-browser", description: "浏览器自动化和 Web 测试", category: "其他工具", entryPrefix: "mock/skills/agent-browser" },
-    { id: "find-skills", name: "find-skills", displayName: "Find Skills", description: "查找可安装的 Skill", category: "其他工具", entryPrefix: "mock/skills/find-skills" },
-    { id: "skill-creator", name: "skill-creator", displayName: "Skill Creator", description: "创建、修改和优化 Skill", category: "其他工具", entryPrefix: "mock/skills/skill-creator" },
+  const targets: Target[] = [
+    { id: "global-agents", kind: "global", name: "全局目录", path: "~/.agents/skills", exists: true, appliedCount: 5, totalCount: 9 },
+    { id: "project-skill-manager", kind: "project", name: "skill管理器", path: "~/项目/skill管理器", exists: true, appliedCount: 3, totalCount: 9 },
+    { id: "project-knowledge", kind: "project", name: "知识管理", path: "~/项目/知识管理", exists: true, appliedCount: 2, totalCount: 9 },
   ];
-  return [
-    ...skills.map((skill) => ({ ...skill, itemKind: "skill" as const, memberCount: 1 })),
-    {
-      id: "feishu-skill-group",
-      name: "feishu-skill-group",
-      displayName: "飞书技能组",
-      description: "安装官方飞书 CLI 的 Agent Skills，并创建一个可批量应用的技能组合。",
-      category: "其他工具",
-      entryPrefix: "bundle:feishu-skill-group",
-      itemKind: "bundle" as const,
-      memberCount: 26,
-    },
-  ];
-}
 
-function mockState(..._values: string[]): AppState {
-  const agents = [
-    {
-      id: "agents",
-      name: "全局目录",
-      globalPath: "/Users/bytedance/.agents/skills",
-      projectRelativePath: ".agents/skills",
-      enabled: true,
-      pathExists: true,
-    },
-  ];
-  const projects = [
-    {
-      id: "skill-manager",
-      name: "skill管理器",
-      path: "/Users/bytedance/项目/skill管理器",
-      exists: true,
-    },
-    {
-      id: "knowledge",
-      name: "知识管理",
-      path: "/Users/bytedance/项目/知识管理",
-      exists: false,
-    },
-  ];
-  const skills = [
-    {
-      id: "code-review",
-      name: "code-review",
-      displayName: "代码审查",
-      description: "检查代码变更里的逻辑、健壮性、性能和测试风险。",
-      path: "/Users/bytedance/.skills-manager/skills/code-review",
-      hasSkillMd: true,
-      tags: ["开发", "质量"],
-      enabledCount: 3,
-      issueCount: 0,
-      contentPreview: "# 代码审查\n\n用于在提交前检查代码质量和隐藏风险。",
-    },
-    {
-      id: "product-research",
-      name: "product-research",
-      displayName: "产品调研",
-      description: "整理竞品、用户场景和需求判断，输出结构化产品结论。",
-      path: "/Users/bytedance/.skills-manager/skills/product-research",
-      hasSkillMd: true,
-      tags: ["产品", "知识管理"],
-      enabledCount: 1,
-      issueCount: 1,
-      contentPreview: "# 产品调研\n\n输出事实、推测和下一步建议。",
-    },
-    {
-      id: "session-wrap-up",
-      name: "session-wrap-up",
-      displayName: "会话收尾",
-      description: "把实质性改动同步到项目文档和长期记忆。",
-      path: "/Users/bytedance/.skills-manager/skills/session-wrap-up",
-      hasSkillMd: true,
-      tags: ["文档"],
-      enabledCount: 2,
-      issueCount: 0,
-      contentPreview: "# 会话收尾\n\n整理变更、规则和后续注意事项。",
-    },
-  ];
-  const globalWorkspaces = agents.map((agent) => ({
-    agentId: agent.id,
-    agentName: agent.name,
-    rootPath: agent.globalPath,
-    rootExists: agent.pathExists,
-    statuses: skills.map((skill, index) => ({
-      id: `global-${agent.id}-${skill.id}`,
+  const targetStatuses = new Map<string, TargetSkillStatus[]>();
+  for (const target of targets) {
+    targetStatuses.set(target.id, skills.map((skill, i) => ({
+      id: `${target.id}-${skill.id}`,
       skillId: skill.id,
       skillName: skill.name,
       displayName: skill.displayName,
       description: skill.description,
-      targetKind: "global" as const,
-      agentId: agent.id,
-      agentName: agent.name,
-      projectId: null,
-      projectName: null,
-      status: index === 1 ? "conflict" as const : index === 2 ? "disabled" as const : "enabled" as const,
-      targetPath: `${agent.globalPath}/${skill.name}`,
-      linkTarget: index === 2 ? null : skill.path,
-      issue: index === 1 ? "目标位置已有同名内容" : null,
-      rootExists: agent.pathExists,
-    })),
-  }));
-  const projectWorkspaces = projects.map((project) => ({
-    projectId: project.id,
-    projectName: project.name,
-    projectPath: project.path,
-    projectExists: project.exists,
-    rootPath: `${project.path}/.agents/skills`,
-    rootExists: project.exists,
-    statuses: skills.map((skill, index) => ({
-      id: `project-${project.id}-${skill.id}`,
-      skillId: skill.id,
-      skillName: skill.name,
-      displayName: skill.displayName,
-      description: skill.description,
-      targetKind: "project" as const,
-      agentId: "project",
-      agentName: "项目目录",
-      projectId: project.id,
-      projectName: project.name,
-      status: project.exists ? (index === 0 ? "enabled" as const : "disabled" as const) : "pathMissing" as const,
-      targetPath: `${project.path}/.agents/skills/${skill.name}`,
-      linkTarget: index === 0 ? skill.path : null,
-      issue: project.exists ? null : "项目路径不存在",
-      rootExists: project.exists,
-    })),
-  }));
-  return {
-    baseDir: "/Users/bytedance/.skills-manager",
-    skillsRoot: "/Users/bytedance/.skills-manager/skills",
-    databasePath: "/Users/bytedance/.skills-manager/app.db",
-    configPath: "/Users/bytedance/.skills-manager/config.json",
-    agents,
-    projects,
-    skills,
-    globalWorkspaces,
-    projectWorkspaces,
-    presets: [
-      {
-        id: "dev",
-        name: "开发组合",
-        description: "代码审查、会话收尾和开发质量检查。",
-        skillIds: ["code-review", "session-wrap-up"],
-      },
-    ],
-    issues: ["全局目录 / 全局 / 产品调研：目标位置已有同名内容"],
-  };
+      status: i < target.appliedCount ? "applied" as const : (skill.issueCount > 0 ? "problem" as const : "notApplied" as const),
+      rawStatus: i < target.appliedCount ? "enabled" as const : (skill.issueCount > 0 ? "conflict" as const : "disabled" as const),
+      targetPath: `${target.path}/${skill.name}`,
+      issue: skill.issueCount > 0 && i >= target.appliedCount ? "目标位置已有同名内容" : null,
+    })));
+  }
+
+  return { baseDir: "~/.skills-manager", skillsRoot: "~/.skills-manager/skills", skills, targets, targetStatuses, issues: [] };
 }

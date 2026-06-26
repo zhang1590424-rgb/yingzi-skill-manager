@@ -1,6 +1,7 @@
 export type TargetKind = "global" | "project";
 
-export type SkillStatus =
+// v2: UI only shows 3 states, mapped from backend's 7
+export type SkillStatusRaw =
   | "enabled"
   | "disabled"
   | "unmanaged"
@@ -9,30 +10,12 @@ export type SkillStatus =
   | "pathMissing"
   | "invalid";
 
-export interface Agent {
-  id: string;
-  name: string;
-  globalPath: string;
-  projectRelativePath: string;
-  enabled: boolean;
-  pathExists: boolean;
-}
+export type SkillStatusV2 = "applied" | "notApplied" | "problem";
 
-export interface Project {
-  id: string;
-  name: string;
-  path: string;
-  exists: boolean;
-}
-
-export interface ProjectSuggestion {
-  id: string;
-  name: string;
-  path: string;
-  reason: string;
-  score: number;
-  recommended: boolean;
-  alreadyAdded: boolean;
+export function mapStatus(raw: SkillStatusRaw): SkillStatusV2 {
+  if (raw === "enabled") return "applied";
+  if (raw === "disabled") return "notApplied";
+  return "problem";
 }
 
 export interface Skill {
@@ -48,124 +31,36 @@ export interface Skill {
   contentPreview: string;
 }
 
-export interface TargetStatus {
+export interface Target {
+  id: string;
+  kind: TargetKind;
+  name: string;
+  path: string;
+  exists: boolean;
+  appliedCount: number;
+  totalCount: number;
+}
+
+export interface TargetSkillStatus {
   id: string;
   skillId: string;
   skillName: string;
   displayName: string;
   description: string;
-  targetKind: TargetKind;
-  agentId: string;
-  agentName: string;
-  projectId?: string | null;
-  projectName?: string | null;
-  status: SkillStatus;
+  status: SkillStatusV2;
+  rawStatus: SkillStatusRaw;
   targetPath: string;
-  linkTarget?: string | null;
   issue?: string | null;
-  issueKey?: string | null;
-  ignored?: boolean;
-  rootExists: boolean;
-}
-
-export interface AgentWorkspace {
-  agentId: string;
-  agentName: string;
-  rootPath: string;
-  rootExists: boolean;
-  statuses: TargetStatus[];
-}
-
-export interface ProjectWorkspace {
-  projectId: string;
-  projectName: string;
-  projectPath: string;
-  projectExists: boolean;
-  rootPath: string;
-  rootExists: boolean;
-  statuses: TargetStatus[];
-}
-
-export interface Preset {
-  id: string;
-  name: string;
-  description: string;
-  skillIds: string[];
 }
 
 export interface AppState {
   baseDir: string;
   skillsRoot: string;
-  databasePath: string;
-  configPath: string;
-  agents: Agent[];
-  projects: Project[];
   skills: Skill[];
-  globalWorkspaces: AgentWorkspace[];
-  projectWorkspaces: ProjectWorkspace[];
-  presets: Preset[];
+  targets: Target[];
+  targetStatuses: Map<string, TargetSkillStatus[]>; // key = target.id
   issues: string[];
 }
 
-export interface DeployTarget {
-  agentId?: string | null;
-  projectId?: string | null;
-}
-
-export interface OperationReport {
-  changed: number;
-  skipped: number;
-  conflicts: string[];
-  errors: string[];
-}
-
-export interface OnboardingStatus {
-  completed: boolean;
-}
-
-export interface DetectedAgent {
-  id: string;
-  name: string;
-  globalPath: string;
-  projectRelativePath: string;
-  exists: boolean;
-}
-
-export interface BulkAdoptItem {
-  agentId?: string | null;
-  projectId?: string | null;
-  skillName: string;
-}
-
-export interface BulkAdoptReport {
-  state: AppState;
-  changed: number;
-  errors: string[];
-}
-
-export interface PackageSkill {
-  id: string;
-  name: string;
-  displayName: string;
-  description: string;
-  category: string;
-  entryPrefix: string;
-  exists: boolean;
-  itemKind: "skill" | "bundle";
-  memberCount: number;
-}
-
-export interface SkillPackageScan {
-  packagePath: string;
-  skills: PackageSkill[];
-  ignoredPluginSkills: number;
-}
-
-export interface PackageImportReport {
-  state: AppState;
-  changed: number;
-  skipped: number;
-  errors: string[];
-}
-
-export type ViewKey = "library" | "global" | "projects" | "presets" | "settings";
+// View types
+export type ViewKey = "skills" | "targets" | "settings";
