@@ -178,6 +178,18 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
     return { applied, notApplied, problem, total: applied + notApplied + problem };
   }, [skillStatusMap]);
 
+  // Count aggregate statuses across all targets (for "全部技能" view)
+  const globalStatusCounts = useMemo(() => {
+    if (activeTargetId) return null; // use target-specific counts instead
+    let applied = 0, notApplied = 0, problem = 0;
+    for (const s of state.skills) {
+      if (s.issueCount > 0) problem++;
+      else if (s.enabledCount > 0) applied++;
+      else notApplied++;
+    }
+    return { applied, notApplied, problem, total: applied + notApplied + problem };
+  }, [state.skills, activeTargetId]);
+
   // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -206,15 +218,28 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
       );
     }
     // Tag filter
-    if (activeTag) {
+    if (activeTag === "__NO_TAG__") {
+      list = list.filter(s => s.tags.length === 0);
+    } else if (activeTag) {
       list = list.filter(s => s.tags.includes(activeTag));
     }
-    // Status filter (only when target selected)
-    if (statusFilter && skillStatusMap) {
-      list = list.filter(s => {
-        const st = skillStatusMap.get(s.id);
-        return st?.status === statusFilter;
-      });
+    // Status filter
+    if (statusFilter) {
+      if (skillStatusMap) {
+        // Target view: filter by target-specific status
+        list = list.filter(s => {
+          const st = skillStatusMap.get(s.id);
+          return st?.status === statusFilter;
+        });
+      } else {
+        // All skills view: filter by aggregate status
+        list = list.filter(s => {
+          if (statusFilter === "applied") return s.enabledCount > 0;
+          if (statusFilter === "notApplied") return s.enabledCount === 0 && s.issueCount === 0;
+          if (statusFilter === "problem") return s.issueCount > 0;
+          return true;
+        });
+      }
     }
     return list;
   }, [state.skills, search, activeTag, statusFilter, skillStatusMap]);
@@ -450,7 +475,7 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
         </div>
 
         {/* Row 2: Tag filter + Status dropdown */}
-        {(allTags.length > 0 || activeTargetId) && (
+        {(allTags.length > 0 || activeTargetId || globalStatusCounts) && (
           <div className="filter-row">
             {allTags.length > 0 && (
               <>
@@ -471,6 +496,12 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
                   </button>
                 ))}
                 <button
+                  className={`filter-chip no-tag-chip ${activeTag === "__NO_TAG__" ? "active" : ""}`}
+                  onClick={() => { setActiveTag(activeTag === "__NO_TAG__" ? null : "__NO_TAG__"); }}
+                >
+                  无标签
+                </button>
+                <button
                   className={`manage-tags-pencil ${tagManageOpen ? "active" : ""}`}
                   onClick={() => setTagManageOpen(!tagManageOpen)}
                   title="管理标签"
@@ -482,17 +513,20 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
                 </button>
               </>
             )}
-            {activeTargetId && statusCounts && (
+            {(() => {
+              const counts = statusCounts || globalStatusCounts;
+              if (!counts) return null;
+              return (
               <div className="status-dropdown" ref={statusDropdownRef}>
                 <button
                   className={`status-dropdown-trigger ${statusFilter ? "active" : ""}`}
                   onClick={() => setStatusDropdownOpen(!statusDropdownOpen)}
                 >
                   <span className="status-dropdown-label">
-                    {statusFilter === "applied" ? `已应用 · ${statusCounts.applied}` :
-                     statusFilter === "notApplied" ? `未应用 · ${statusCounts.notApplied}` :
-                     statusFilter === "problem" ? `有问题 · ${statusCounts.problem}` :
-                     `全部状态 · ${statusCounts.total}`}
+                    {statusFilter === "applied" ? `已应用 · ${counts.applied}` :
+                     statusFilter === "notApplied" ? `未应用 · ${counts.notApplied}` :
+                     statusFilter === "problem" ? `有问题 · ${counts.problem}` :
+                     `全部状态 · ${counts.total}`}
                   </span>
                   <span className="status-dropdown-chevron">{statusDropdownOpen ? "▴" : "▾"}</span>
                 </button>
@@ -502,35 +536,36 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
                       className={`status-dropdown-item ${!statusFilter ? "active" : ""}`}
                       onClick={() => { setStatusFilter(null); setStatusDropdownOpen(false); }}
                     >
-                      全部状态 · {statusCounts.total}
+                      全部状态 · {counts.total}
                     </div>
                     <div
                       className={`status-dropdown-item ${statusFilter === "applied" ? "active" : ""}`}
                       onClick={() => { setStatusFilter("applied"); setStatusDropdownOpen(false); }}
                     >
                       <span className="status-dot applied" />
-                      已应用 · {statusCounts.applied}
+                      已应用 · {counts.applied}
                     </div>
                     <div
                       className={`status-dropdown-item ${statusFilter === "notApplied" ? "active" : ""}`}
                       onClick={() => { setStatusFilter("notApplied"); setStatusDropdownOpen(false); }}
                     >
                       <span className="status-dot not-applied" />
-                      未应用 · {statusCounts.notApplied}
+                      未应用 · {counts.notApplied}
                     </div>
-                    {statusCounts.problem > 0 && (
+                    {counts.problem > 0 && (
                       <div
                         className={`status-dropdown-item ${statusFilter === "problem" ? "active" : ""}`}
                         onClick={() => { setStatusFilter("problem"); setStatusDropdownOpen(false); }}
                       >
                         <span className="status-dot problem" />
-                        有问题 · {statusCounts.problem}
+                        有问题 · {counts.problem}
                       </div>
                     )}
                   </div>
                 )}
               </div>
-            )}
+              );
+            })()}
           </div>
         )}
 

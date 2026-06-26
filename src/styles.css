@@ -300,6 +300,19 @@ body {
   margin-right: 3px;
 }
 
+.filter-chip.no-tag-chip {
+  border: 1px dashed var(--border);
+  background: transparent;
+}
+.filter-chip.no-tag-chip:hover {
+  background: #F7F6F3;
+}
+.filter-chip.no-tag-chip.active {
+  background: var(--button-primary);
+  color: var(--text-inverse);
+  border-color: var(--button-primary);
+}
+
 /* Manage tags pencil icon */
 .manage-tags-pencil {
   width: 24px;
