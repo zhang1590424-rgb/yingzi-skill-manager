@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设置页 Mockup — 统一目标</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    background: #f5f0eb;
+    color: #3d3429;
+    display: flex;
+    justify-content: center;
+    padding: 40px 20px;
+    min-height: 100vh;
+  }
+
+  .container {
+    display: flex;
+    gap: 60px;
+    max-width: 900px;
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .panel {
+    width: 380px;
+    flex-shrink: 0;
+  }
+
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 28px;
+  }
+
+  .panel-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #3d3429;
+  }
+
+  .badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+  }
+
+  .badge-before {
+    background: #e8e0d8;
+    color: #8a7d6f;
+  }
+
+  .badge-after {
+    background: #d4e8d0;
+    color: #4a7a42;
+  }
+
+  .close-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    color: #a89b8c;
+    font-size: 18px;
+    cursor: pointer;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .close-btn:hover { background: #ebe5dd; }
+
+  .section { margin-bottom: 28px; }
+
+  .section-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: #a89b8c;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 10px;
+  }
+
+  .card {
+    background: #fff;
+    border: 1px solid #e8e0d8;
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    transition: border-color 0.15s;
+  }
+
+  .card:hover { border-color: #d4ccc2; }
+
+  .card-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: #f5f0eb;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .card-icon svg {
+    width: 18px;
+    height: 18px;
+    color: #a89b8c;
+  }
+
+  .card-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .card-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: #3d3429;
+  }
+
+  .card-path {
+    font-size: 12px;
+    color: #a89b8c;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+  }
+
+  .card-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    color: #c4b9ab;
+    cursor: pointer;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .icon-btn:hover { background: #f5f0eb; color: #8a7d6f; }
+
+  .icon-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .add-btn {
+    width: 100%;
+    padding: 12px;
+    border: 1.5px dashed #d4ccc2;
+    border-radius: 10px;
+    background: transparent;
+    color: #a89b8c;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 4px;
+  }
+
+  .add-btn:hover {
+    border-color: #b8ad9e;
+    color: #8a7d6f;
+    background: #faf7f3;
+  }
+
+  .hint {
+    font-size: 11px;
+    color: #b8ad9e;
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+
+  .tag {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #ebe5dd;
+    color: #8a7d6f;
+    margin-left: 8px;
+    font-weight: 500;
+    vertical-align: middle;
+  }
+
+  .divider {
+    width: 1px;
+    background: #e8e0d8;
+    align-self: stretch;
+    margin: 0 10px;
+  }
+
+  .label-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .strike {
+    text-decoration: line-through;
+    opacity: 0.5;
+  }
+
+  .arrow-label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .arrow-label .arrow {
+    font-size: 20px;
+    color: #4a7a42;
+  }
+
+  /* Annotation */
+  .annotation {
+    position: relative;
+    margin-left: 8px;
+  }
+
+  .annotation-dot {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #e07d4a;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: help;
+  }
+
+  .callout {
+    background: #fff9f0;
+    border: 1px solid #f0d9b5;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-top: 10px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: #6b5d4f;
+    line-height: 1.6;
+  }
+
+  .callout strong {
+    color: #e07d4a;
+  }
+
+  .callout code {
+    background: #f5f0eb;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- BEFORE -->
+  <div class="panel">
+    <div class="panel-header">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span class="panel-title">设置</span>
+        <span class="badge badge-before">改造前</span>
+      </div>
+      <button class="close-btn">×</button>
+    </div>
+
+    <!-- 技能根目录 -->
+    <div class="section">
+      <div class="section-label">技能根目录</div>
+      <div class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+        </div>
+        <div class="card-info">
+          <div class="card-name">主库</div>
+          <div class="card-path">/Users/bytedance/.skills-man…</div>
+        </div>
+        <div class="card-actions">
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+        </div>
+      </div>
+      <div class="hint">所有技能以此目录为唯一事实源</div>
+    </div>
+
+    <!-- 全局目录 -->
+    <div class="section">
+      <div class="section-label" style="color:#a89b8c;">全局目录</div>
+      <div class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+        </div>
+        <div class="card-info">
+          <div class="card-name">全局目录</div>
+          <div class="card-path">/Users/bytedance/.agen…</div>
+        </div>
+        <div class="card-actions">
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+      </div>
+      <button class="add-btn">+ 添加全局目录</button>
+      <div class="hint">技能通过软链接分发到全局目录</div>
+    </div>
+
+    <!-- 项目 -->
+    <div class="section">
+      <div class="section-label">项目</div>
+      <div class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <div class="card-info">
+          <div class="card-name">工作</div>
+          <div class="card-path">/Users/bytedance/工作</div>
+        </div>
+        <div class="card-actions">
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+      </div>
+      <button class="add-btn">+ 添加项目</button>
+      <div class="hint">项目内技能落在 .agents/skills 子目录</div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- AFTER -->
+  <div class="panel">
+    <div class="panel-header">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span class="panel-title">设置</span>
+        <span class="badge badge-after">改造后</span>
+      </div>
+      <button class="close-btn">×</button>
+    </div>
+
+    <!-- 技能根目录 — 不变 -->
+    <div class="section">
+      <div class="section-label">技能根目录</div>
+      <div class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+        </div>
+        <div class="card-info">
+          <div class="card-name">主库</div>
+          <div class="card-path">/Users/bytedance/.skills-man…</div>
+        </div>
+        <div class="card-actions">
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+        </div>
+      </div>
+      <div class="hint">所有技能以此目录为唯一事实源</div>
+    </div>
+
+    <!-- 统一的目标 -->
+    <div class="section">
+      <div class="section-label">目标目录</div>
+      <div class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        </div>
+        <div class="card-info">
+          <div class="card-name">全局<span class="tag">默认</span></div>
+          <div class="card-path">/Users/bytedance/.agents/skills</div>
+        </div>
+        <div class="card-actions">
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+          <!-- 无删除按钮 -->
+        </div>
+      </div>
+
+      <!-- 用户添加的目标 -->
+      <div class="card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        </div>
+        <div class="card-info">
+          <div class="card-name">工作</div>
+          <div class="card-path">/Users/bytedance/工作</div>
+        </div>
+        <div class="card-actions">
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+          <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+      </div>
+
+      <button class="add-btn">+ 添加目标</button>
+      <div class="hint">技能通过软链接分发到目标目录</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

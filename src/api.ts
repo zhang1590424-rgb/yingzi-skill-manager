@@ -8,22 +8,14 @@ interface RawAppState {
   skillsRoot: string;
   databasePath: string;
   configPath: string;
-  agents: Array<{ id: string; name: string; globalPath: string; enabled: boolean; pathExists: boolean }>;
-  projects: Array<{ id: string; name: string; path: string; exists: boolean }>;
+  targets: Array<{ id: string; name: string; path: string; isDefault: boolean; pathExists: boolean }>;
   skills: Skill[];
-  globalWorkspaces: Array<{
-    agentId: string;
-    agentName: string;
-    rootPath: string;
-    rootExists: boolean;
-    statuses: RawTargetStatus[];
-  }>;
-  projectWorkspaces: Array<{
-    projectId: string;
-    projectName: string;
-    projectPath: string;
-    projectExists: boolean;
-    rootPath: string;
+  workspaces: Array<{
+    targetId: string;
+    targetName: string;
+    targetPath: string;
+    skillsPath: string;
+    targetExists: boolean;
     rootExists: boolean;
     statuses: RawTargetStatus[];
   }>;
@@ -46,46 +38,18 @@ function transformState(raw: RawAppState): AppState {
   const targets: Target[] = [];
   const targetStatuses = new Map<string, TargetSkillStatus[]>();
 
-  // Global directories as targets
-  for (const workspace of raw.globalWorkspaces) {
-    const targetId = `global-${workspace.agentId}`;
+  for (const workspace of raw.workspaces) {
     const applied = workspace.statuses.filter(s => s.status === "enabled").length;
     targets.push({
-      id: targetId,
-      kind: "global",
-      name: workspace.agentName,
-      path: workspace.rootPath,
-      exists: workspace.rootExists,
+      id: workspace.targetId,
+      name: workspace.targetName,
+      path: workspace.targetPath,
+      isDefault: raw.targets.find(t => t.id === workspace.targetId)?.isDefault ?? false,
+      exists: workspace.targetExists,
       appliedCount: applied,
       totalCount: raw.skills.length,
     });
-    targetStatuses.set(targetId, workspace.statuses.map(s => ({
-      id: s.id,
-      skillId: s.skillId,
-      skillName: s.skillName,
-      displayName: s.displayName,
-      description: s.description,
-      status: mapStatus(s.status),
-      rawStatus: s.status,
-      targetPath: s.targetPath,
-      issue: s.issue,
-    })));
-  }
-
-  // Projects as targets
-  for (const workspace of raw.projectWorkspaces) {
-    const targetId = `project-${workspace.projectId}`;
-    const applied = workspace.statuses.filter(s => s.status === "enabled").length;
-    targets.push({
-      id: targetId,
-      kind: "project",
-      name: workspace.projectName,
-      path: workspace.projectPath,
-      exists: workspace.projectExists,
-      appliedCount: applied,
-      totalCount: raw.skills.length,
-    });
-    targetStatuses.set(targetId, workspace.statuses.map(s => ({
+    targetStatuses.set(workspace.targetId, workspace.statuses.map(s => ({
       id: s.id,
       skillId: s.skillId,
       skillName: s.skillName,
@@ -127,8 +91,7 @@ export async function deleteSkill(skillId: string): Promise<AppState> {
 }
 
 interface DeployTarget {
-  agentId?: string | null;
-  projectId?: string | null;
+  targetId: string;
 }
 
 interface OperationReport {
@@ -156,12 +119,11 @@ export async function withdrawSkill(
 }
 
 export async function adoptSkillFromTarget(
-  agentId: string | undefined,
-  projectId: string | undefined,
+  targetId: string,
   skillName: string,
 ): Promise<AppState> {
   if (!isTauriRuntime()) return mockState();
-  const raw = await invoke<RawAppState>("adopt_skill_from_target", { agentId, projectId, skillName });
+  const raw = await invoke<RawAppState>("adopt_skill_from_target", { targetId, skillName });
   return transformState(raw);
 }
 
@@ -171,27 +133,15 @@ export async function removeUnmanagedSkill(targetPath: string): Promise<AppState
   return transformState(raw);
 }
 
-export async function addProject(path: string): Promise<AppState> {
+export async function addTarget(path: string): Promise<AppState> {
   if (!isTauriRuntime()) return mockState();
-  const raw = await invoke<RawAppState>("add_project", { path });
+  const raw = await invoke<RawAppState>("add_target", { path });
   return transformState(raw);
 }
 
-export async function removeProject(projectId: string): Promise<AppState> {
+export async function removeTarget(targetId: string): Promise<AppState> {
   if (!isTauriRuntime()) return mockState();
-  const raw = await invoke<RawAppState>("remove_project", { projectId });
-  return transformState(raw);
-}
-
-export async function addGlobalDir(globalPath: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState();
-  const raw = await invoke<RawAppState>("add_agent", { globalPath });
-  return transformState(raw);
-}
-
-export async function removeGlobalDir(agentId: string): Promise<AppState> {
-  if (!isTauriRuntime()) return mockState();
-  const raw = await invoke<RawAppState>("remove_agent", { agentId });
+  const raw = await invoke<RawAppState>("remove_target", { targetId });
   return transformState(raw);
 }
 
@@ -206,6 +156,42 @@ export async function getAllTags(): Promise<string[]> {
     return ["产品", "创意", "设计", "开发", "质量", "飞书", "文档"];
   }
   return invoke<string[]>("get_all_tags");
+}
+
+export async function getAllTagsInfo(): Promise<import("./types").TagInfo[]> {
+  if (!isTauriRuntime()) {
+    return [
+      { name: "产品", colorIndex: 0, count: 5, sortOrder: 0 },
+      { name: "创意", colorIndex: 2, count: 3, sortOrder: 1 },
+      { name: "开发", colorIndex: 4, count: 8, sortOrder: 2 },
+      { name: "文档", colorIndex: 5, count: 4, sortOrder: 3 },
+      { name: "飞书", colorIndex: 9, count: 2, sortOrder: 4 },
+      { name: "质量", colorIndex: 3, count: 1, sortOrder: 5 },
+    ];
+  }
+  return invoke<import("./types").TagInfo[]>("get_all_tags_info");
+}
+
+export async function renameTag(oldName: string, newName: string): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("rename_tag", { oldName, newName });
+  return transformState(raw);
+}
+
+export async function setTagColor(tag: string, colorIndex: number): Promise<import("./types").TagInfo[]> {
+  if (!isTauriRuntime()) return getAllTagsInfo();
+  return invoke<import("./types").TagInfo[]>("set_tag_color", { tag, colorIndex });
+}
+
+export async function deleteTag(tag: string): Promise<AppState> {
+  if (!isTauriRuntime()) return mockState();
+  const raw = await invoke<RawAppState>("delete_tag", { tag });
+  return transformState(raw);
+}
+
+export async function reorderTag(tag: string, direction: "up" | "down"): Promise<import("./types").TagInfo[]> {
+  if (!isTauriRuntime()) return getAllTagsInfo();
+  return invoke<import("./types").TagInfo[]>("reorder_tag", { tag, direction });
 }
 
 export async function openPath(path: string): Promise<void> {
@@ -244,9 +230,9 @@ function mockState(): AppState {
   ];
 
   const targets: Target[] = [
-    { id: "global-agents", kind: "global", name: "全局目录", path: "~/.agents/skills", exists: true, appliedCount: 5, totalCount: 9 },
-    { id: "project-skill-manager", kind: "project", name: "skill管理器", path: "~/项目/skill管理器", exists: true, appliedCount: 3, totalCount: 9 },
-    { id: "project-knowledge", kind: "project", name: "知识管理", path: "~/项目/知识管理", exists: true, appliedCount: 2, totalCount: 9 },
+    { id: "agents", name: "全局", path: "~/.agents/skills", isDefault: true, exists: true, appliedCount: 5, totalCount: 9 },
+    { id: "project-skill-manager", name: "skill管理器", path: "~/项目/skill管理器", isDefault: false, exists: true, appliedCount: 3, totalCount: 9 },
+    { id: "project-knowledge", name: "知识管理", path: "~/项目/知识管理", isDefault: false, exists: true, appliedCount: 2, totalCount: 9 },
   ];
 
   const targetStatuses = new Map<string, TargetSkillStatus[]>();

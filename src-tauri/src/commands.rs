@@ -1,11 +1,10 @@
 use crate::models::{
-    AppState, BulkAdoptItem, BulkAdoptReport, DeployTarget, DetectedAgent, OnboardingStatus,
-    OperationReport, PackageImportReport, PackageSkill, ProjectSuggestion, SkillPackageScan,
-    TargetStatus,
+    AppState, BulkAdoptItem, BulkAdoptReport, DeployTarget, OnboardingStatus, OperationReport,
+    PackageImportReport, PackageSkill, ProjectSuggestion, SkillPackageScan, TargetStatus,
 };
 use crate::storage::{
-    copy_dir_all, create_dir_symlink, is_link_to, remove_path, resolve_symlink_target, slugify,
-    Store,
+    compute_skills_path, copy_dir_all, create_dir_symlink, is_link_to, remove_path,
+    resolve_symlink_target, slugify, Store,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -371,15 +370,9 @@ pub fn delete_skill(skill_id: String) -> Result<AppState, String> {
         let store = Store::new()?;
         let state = store.load_app_state()?;
         let active_count = state
-            .global_workspaces
+            .workspaces
             .iter()
             .flat_map(|workspace| workspace.statuses.iter())
-            .chain(
-                state
-                    .project_workspaces
-                    .iter()
-                    .flat_map(|workspace| workspace.statuses.iter()),
-            )
             .filter(|status| {
                 status.skill_id == skill_id
                     && matches!(status.status, crate::models::SkillStatus::Enabled)
@@ -428,26 +421,23 @@ pub fn withdraw_skill(
 
 #[tauri::command]
 pub fn adopt_skill_from_target(
-    agent_id: Option<String>,
-    project_id: Option<String>,
+    target_id: String,
     skill_name: String,
 ) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
-        adopt_skill_internal(&store, agent_id.as_deref(), project_id.as_deref(), &skill_name)?;
+        adopt_skill_internal(&store, &target_id, &skill_name)?;
         store.load_app_state()
     })
 }
 
 fn adopt_skill_internal(
     store: &Store,
-    agent_id: Option<&str>,
-    project_id: Option<&str>,
+    target_id: &str,
     skill_name: &str,
 ) -> Result<()> {
     let target = DeployTarget {
-        agent_id: agent_id.map(|value| value.to_string()),
-        project_id: project_id.map(|value| value.to_string()),
+        target_id: target_id.to_string(),
     };
     let root = resolve_target_root(store, &target)?;
     let source = root.join(skill_name);
@@ -490,10 +480,19 @@ pub fn remove_unmanaged_skill(target_path: String) -> Result<AppState, String> {
 }
 
 #[tauri::command]
-pub fn add_project(path: String) -> Result<AppState, String> {
+pub fn add_target(path: String) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
-        store.add_project(Path::new(&path))?;
+        store.add_target(Path::new(&path))?;
+        store.load_app_state()
+    })
+}
+
+#[tauri::command]
+pub fn remove_target(target_id: String) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.remove_target(&target_id)?;
         store.load_app_state()
     })
 }
@@ -501,42 +500,6 @@ pub fn add_project(path: String) -> Result<AppState, String> {
 #[tauri::command]
 pub fn suggest_onboarding_projects() -> Result<Vec<ProjectSuggestion>, String> {
     run(|| Store::new()?.suggest_onboarding_projects())
-}
-
-#[tauri::command]
-pub fn add_agent(global_path: String) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.add_agent(Path::new(&global_path))?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn remove_project(project_id: String) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.remove_project(&project_id)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn remove_agent(agent_id: String) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.remove_agent(&agent_id)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
-pub fn update_agent_path(agent_id: String, path: String) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.update_agent_path(&agent_id, Path::new(&path))?;
-        store.load_app_state()
-    })
 }
 
 #[tauri::command]
@@ -670,46 +633,16 @@ fn target_skill_path(store: &Store, target: &DeployTarget, skill_id: &str) -> Re
     Ok(resolve_target_root(store, target)?.join(skill_id))
 }
 
-/// 解析分发目标的根目录：
-/// - 项目维度（`project_id` 非空）：固定 `<项目根>/.agents/skills`，不再区分全局目录。
-/// - 全局维度：使用 `agent_id` 指向的全局目录。
 fn resolve_target_root(store: &Store, target: &DeployTarget) -> Result<PathBuf> {
-    if let Some(project_id) = &target.project_id {
-        let project = store.find_project(project_id)?;
-        let project_root = ensure_existing_project_root(&project.path)?;
-        return Ok(project_root.join(crate::storage::PROJECT_SKILLS_RELATIVE));
+    let target_model = store.find_target(&target.target_id)?;
+    let target_path = Path::new(&target_model.path);
+    if !target_path.exists() {
+        return Err(anyhow!("目标路径不存在：{}", target_model.path));
     }
-    let agent_id = target
-        .agent_id
-        .as_deref()
-        .ok_or_else(|| anyhow!("缺少全局目录标识"))?;
-    let agent = store.find_agent(agent_id)?;
-    ensure_agent_enabled(&agent)?;
-    Ok(PathBuf::from(agent.global_path))
-}
-
-fn ensure_agent_enabled(agent: &crate::models::Agent) -> Result<()> {
-    if agent.enabled {
-        return Ok(());
+    if !target_path.is_dir() {
+        return Err(anyhow!("目标路径不是文件夹：{}", target_model.path));
     }
-    Err(anyhow!("全局目录已停用，不能分发或收回：{}", agent.name))
-}
-
-fn ensure_existing_project_root(project_path: &str) -> Result<PathBuf> {
-    let root = PathBuf::from(project_path);
-    if !root.exists() {
-        return Err(anyhow!(
-            "项目路径不存在，无法进行项目级分发：{}",
-            root.display()
-        ));
-    }
-    if !root.is_dir() {
-        return Err(anyhow!(
-            "项目路径不是文件夹，无法进行项目级分发：{}",
-            root.display()
-        ));
-    }
-    Ok(root)
+    Ok(compute_skills_path(&target_model.path))
 }
 
 fn scan_skill_package_internal(store: &Store, package_path: &str) -> Result<SkillPackageScan> {
@@ -1222,20 +1155,6 @@ pub fn get_onboarding_status() -> Result<OnboardingStatus, String> {
 }
 
 #[tauri::command]
-pub fn detect_default_agents() -> Result<Vec<DetectedAgent>, String> {
-    run(|| Store::new()?.detect_default_agents())
-}
-
-#[tauri::command]
-pub fn set_agent_enabled(agent_id: String, enabled: bool) -> Result<AppState, String> {
-    run(|| {
-        let store = Store::new()?;
-        store.set_agent_enabled(&agent_id, enabled)?;
-        store.load_app_state()
-    })
-}
-
-#[tauri::command]
 pub fn set_onboarding_completed(value: bool) -> Result<AppState, String> {
     run(|| {
         let store = Store::new()?;
@@ -1246,7 +1165,7 @@ pub fn set_onboarding_completed(value: bool) -> Result<AppState, String> {
 
 #[tauri::command]
 pub fn list_unmanaged_for_onboarding() -> Result<Vec<TargetStatus>, String> {
-    run(|| Store::new()?.list_unmanaged_in_enabled_agents())
+    run(|| Store::new()?.list_unmanaged_in_targets())
 }
 
 #[tauri::command]
@@ -1258,8 +1177,7 @@ pub fn bulk_adopt_skills(items: Vec<BulkAdoptItem>) -> Result<BulkAdoptReport, S
         for item in items {
             match adopt_skill_internal(
                 &store,
-                item.agent_id.as_deref(),
-                item.project_id.as_deref(),
+                &item.target_id,
                 &item.skill_name,
             ) {
                 Ok(()) => changed += 1,
@@ -1306,6 +1224,47 @@ pub fn get_all_tags() -> Result<Vec<String>, String> {
     run(|| Store::new()?.get_all_tags())
 }
 
+#[tauri::command]
+pub fn get_all_tags_info() -> Result<Vec<crate::models::TagInfo>, String> {
+    run(|| Store::new()?.get_all_tags_info())
+}
+
+#[tauri::command]
+pub fn rename_tag(old_name: String, new_name: String) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.rename_tag(&old_name, &new_name)?;
+        store.load_app_state()
+    })
+}
+
+#[tauri::command]
+pub fn set_tag_color(tag: String, color_index: i32) -> Result<Vec<crate::models::TagInfo>, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.set_tag_color(&tag, color_index)?;
+        store.get_all_tags_info()
+    })
+}
+
+#[tauri::command]
+pub fn delete_tag(tag: String) -> Result<AppState, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.delete_tag(&tag)?;
+        store.load_app_state()
+    })
+}
+
+#[tauri::command]
+pub fn reorder_tag(tag: String, direction: String) -> Result<Vec<crate::models::TagInfo>, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.reorder_tag(&tag, &direction)?;
+        store.get_all_tags_info()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1328,32 +1287,10 @@ mod tests {
         store
     }
 
-    fn insert_agent(store: &Store, id: &str, enabled: bool, project_relative_path: &str) {
-        let conn = store.connection().unwrap();
-        let global_path = store
-            .base_dir
-            .join(format!("{}-global", id))
-            .join("skills")
-            .to_string_lossy()
-            .to_string();
-        conn.execute(
-            "INSERT OR REPLACE INTO agents (id, name, global_path, project_relative_path, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                id,
-                id,
-                global_path,
-                project_relative_path,
-                if enabled { 1 } else { 0 }
-            ],
-        )
-        .unwrap();
-    }
-
-    fn insert_project(store: &Store, id: &str, path: &Path) {
+    fn insert_target(store: &Store, id: &str, path: &Path) {
         let conn = store.connection().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO projects (id, name, path) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO targets (id, name, path, is_default) VALUES (?1, ?2, ?3, 0)",
             rusqlite::params![id, id, path.to_string_lossy().to_string()],
         )
         .unwrap();
@@ -1366,21 +1303,18 @@ mod tests {
     }
 
     #[test]
-    fn deploy_skips_disabled_project_agent_without_creating_skill_root() {
-        let store = temp_store("disabled-project-agent");
-        let project_root = store.base_dir.join("project");
-        fs::create_dir_all(&project_root).unwrap();
+    fn deploy_does_not_create_missing_target_root() {
+        let store = temp_store("missing-target-root");
+        let missing_target = store.base_dir.join("missing-target");
         create_library_skill(&store, "demo");
-        insert_agent(&store, "disabled-agent", false, ".disabled-agent/skills");
-        insert_project(&store, "project-1", &project_root);
+        insert_target(&store, "target-1", &missing_target);
 
         let mut report = OperationReport::empty();
         deploy_skill_internal(
             &store,
             "demo",
             &[DeployTarget {
-                agent_id: "disabled-agent".to_string(),
-                project_id: Some("project-1".to_string()),
+                target_id: "target-1".to_string(),
             }],
             false,
             &mut report,
@@ -1389,35 +1323,35 @@ mod tests {
 
         assert_eq!(report.changed, 0);
         assert_eq!(report.errors.len(), 1);
-        assert!(!project_root.join(".disabled-agent").exists());
+        assert!(!missing_target.exists());
 
         let _ = fs::remove_dir_all(&store.base_dir);
     }
 
     #[test]
-    fn deploy_does_not_create_missing_project_root() {
-        let store = temp_store("missing-project-root");
-        let missing_project = store.base_dir.join("missing-project");
+    fn deploy_creates_symlink_in_existing_target() {
+        let store = temp_store("deploy-existing-target");
+        let target_root = store.base_dir.join("my-project");
+        fs::create_dir_all(&target_root).unwrap();
         create_library_skill(&store, "demo");
-        insert_agent(&store, "enabled-agent", true, ".enabled-agent/skills");
-        insert_project(&store, "project-1", &missing_project);
+        insert_target(&store, "target-1", &target_root);
 
         let mut report = OperationReport::empty();
         deploy_skill_internal(
             &store,
             "demo",
             &[DeployTarget {
-                agent_id: "enabled-agent".to_string(),
-                project_id: Some("project-1".to_string()),
+                target_id: "target-1".to_string(),
             }],
             false,
             &mut report,
         )
         .unwrap();
 
-        assert_eq!(report.changed, 0);
-        assert_eq!(report.errors.len(), 1);
-        assert!(!missing_project.exists());
+        assert_eq!(report.changed, 1);
+        assert_eq!(report.errors.len(), 0);
+        let expected_link = compute_skills_path(&target_root.to_string_lossy()).join("demo");
+        assert!(expected_link.exists());
 
         let _ = fs::remove_dir_all(&store.base_dir);
     }

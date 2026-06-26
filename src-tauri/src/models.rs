@@ -2,22 +2,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Agent {
-    pub id: String,
-    pub name: String,
-    pub global_path: String,
-    pub project_relative_path: String,
-    pub enabled: bool,
-    pub path_exists: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Project {
+pub struct Target {
     pub id: String,
     pub name: String,
     pub path: String,
-    pub exists: bool,
+    pub is_default: bool,
+    pub path_exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,11 +45,8 @@ pub struct TargetStatus {
     pub skill_name: String,
     pub display_name: String,
     pub description: String,
-    pub target_kind: TargetKind,
-    pub agent_id: String,
-    pub agent_name: String,
-    pub project_id: Option<String>,
-    pub project_name: Option<String>,
+    pub target_id: String,
+    pub target_name: String,
     pub status: SkillStatus,
     pub target_path: String,
     pub link_target: Option<String>,
@@ -71,22 +58,12 @@ pub struct TargetStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectWorkspace {
-    pub project_id: String,
-    pub project_name: String,
-    pub project_path: String,
-    pub project_exists: bool,
-    pub root_path: String,
-    pub root_exists: bool,
-    pub statuses: Vec<TargetStatus>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentWorkspace {
-    pub agent_id: String,
-    pub agent_name: String,
-    pub root_path: String,
+pub struct TargetWorkspace {
+    pub target_id: String,
+    pub target_name: String,
+    pub target_path: String,
+    pub skills_path: String,
+    pub target_exists: bool,
     pub root_exists: bool,
     pub statuses: Vec<TargetStatus>,
 }
@@ -107,11 +84,9 @@ pub struct AppState {
     pub skills_root: String,
     pub database_path: String,
     pub config_path: String,
-    pub agents: Vec<Agent>,
-    pub projects: Vec<Project>,
+    pub targets: Vec<Target>,
     pub skills: Vec<Skill>,
-    pub global_workspaces: Vec<AgentWorkspace>,
-    pub project_workspaces: Vec<ProjectWorkspace>,
+    pub workspaces: Vec<TargetWorkspace>,
     pub presets: Vec<Preset>,
     pub issues: Vec<String>,
 }
@@ -119,12 +94,7 @@ pub struct AppState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeployTarget {
-    /// 全局目录维度：指向某个全局目录 id；项目维度可为 None。
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    /// 项目维度：项目 id；为 None 时表示全局目录维度。
-    #[serde(default)]
-    pub project_id: Option<String>,
+    pub target_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,13 +115,6 @@ impl OperationReport {
             errors: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TargetKind {
-    Global,
-    Project,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -188,20 +151,8 @@ pub struct OnboardingStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DetectedAgent {
-    pub id: String,
-    pub name: String,
-    pub global_path: String,
-    pub project_relative_path: String,
-    pub exists: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct BulkAdoptItem {
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    pub project_id: Option<String>,
+    pub target_id: String,
     pub skill_name: String,
 }
 
@@ -242,4 +193,13 @@ pub struct PackageImportReport {
     pub changed: usize,
     pub skipped: usize,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInfo {
+    pub name: String,
+    pub color_index: i32,
+    pub count: u32,
+    pub sort_order: i32,
 }

@@ -1,5 +1,3 @@
-export type TargetKind = "global" | "project";
-
 // v2: UI only shows 3 states, mapped from backend's 7
 export type SkillStatusRaw =
   | "enabled"
@@ -33,9 +31,9 @@ export interface Skill {
 
 export interface Target {
   id: string;
-  kind: TargetKind;
   name: string;
   path: string;
+  isDefault: boolean;
   exists: boolean;
   appliedCount: number;
   totalCount: number;
@@ -62,5 +60,10 @@ export interface AppState {
   issues: string[];
 }
 
-// View types
-export type ViewKey = "skills" | "targets" | "settings";
+// Tag management
+export interface TagInfo {
+  name: string;
+  colorIndex: number;
+  count: number;
+  sortOrder: number;
+}

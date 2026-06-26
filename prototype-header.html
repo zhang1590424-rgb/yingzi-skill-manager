@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>影子 — 工具栏交互方案对比</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --canvas: #FBFBFA;
+  --surface: #FFFFFF;
+  --border: #EAEAEA;
+  --text-primary: #2F3437;
+  --text-secondary: #787774;
+  --button-primary: #111111;
+  --accent-warn: #C4A46B;
+  --accent-success: #5B9A6F;
+  --accent-error: #C25D4E;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Toggle Bar */
+.toggle-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: var(--button-primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 10px 24px;
+  font-size: 13px;
+}
+
+.toggle-bar span {
+  opacity: 0.6;
+}
+
+.toggle-btn {
+  padding: 5px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,255,255,0.2);
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.toggle-btn:hover { background: rgba(255,255,255,0.1); }
+.toggle-btn.active {
+  background: #fff;
+  color: var(--button-primary);
+  border-color: #fff;
+}
+
+/* Layout */
+.app-shell {
+  margin-top: 44px;
+  display: flex;
+  height: calc(100vh - 44px);
+}
+
+/* Sidebar */
+.sidebar {
+  width: 56px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 0;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.sidebar-item {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-secondary);
+  gap: 2px;
+  transition: background 0.12s;
+}
+.sidebar-item:hover { background: var(--canvas); }
+.sidebar-item.active {
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.sidebar-item svg { width: 18px; height: 18px; }
+
+/* Main Content */
+.main-content {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+}
+
+.panel {
+  flex: 1;
+  min-width: 0;
+  padding: 20px 24px;
+  display: none;
+}
+.panel.visible { display: block; }
+
+.split-mode .panel { display: block; border-right: 1px solid var(--border); }
+.split-mode .panel:last-child { border-right: none; }
+
+.panel-label {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 16px;
+}
+.panel-label.old { background: #FEF0E0; color: #9E6B2C; }
+.panel-label.new { background: #E3F0E8; color: #3D7A52; }
+
+/* Toolbar Common */
+.toolbar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolbar-row + .toolbar-row { margin-top: 10px; }
+
+/* Search */
+.search-input {
+  flex: 1;
+  height: 32px;
+  padding: 0 10px 0 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  background: var(--canvas);
+  color: var(--text-primary);
+  outline: none;
+  position: relative;
+  transition: border-color 0.15s;
+}
+.search-input:focus { border-color: #C8C8C6; }
+.search-input::placeholder { color: var(--text-secondary); }
+
+.search-wrap {
+  position: relative;
+  flex: 1;
+}
+.search-wrap::before {
+  content: "🔍";
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  transition: all 0.12s;
+  white-space: nowrap;
+  user-select: none;
+}
+.chip:hover { border-color: #D4D4D2; background: var(--canvas); }
+.chip.active {
+  background: var(--button-primary);
+  color: #fff;
+  border-color: var(--button-primary);
+}
+
+.chip-group {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Buttons */
+.btn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  transition: all 0.12s;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn:hover { background: var(--canvas); }
+.btn-primary {
+  background: var(--button-primary);
+  color: #fff;
+  border-color: var(--button-primary);
+}
+.btn-primary:hover { background: #333; }
+.btn-compact {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  font-size: 16px;
+}
+
+/* Dropdown */
+.dropdown-wrap {
+  position: relative;
+}
+.dropdown-trigger {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.dropdown-trigger:hover { background: var(--canvas); }
+.dropdown-trigger .arrow { font-size: 10px; opacity: 0.5; }
+.dropdown-trigger .label { color: var(--text-secondary); font-size: 11px; }
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+  z-index: 100;
+  display: none;
+}
+.dropdown-menu.open { display: block; }
+
+.dropdown-item {
+  padding: 7px 10px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dropdown-item:hover { background: var(--canvas); }
+.dropdown-item.active { font-weight: 500; }
+.dropdown-item.active::before { content: "✓"; font-size: 11px; }
+
+/* Problem chip */
+.problem-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid #F0DDD8;
+  background: #FDF6F5;
+  color: var(--accent-error);
+  transition: all 0.12s;
+  white-space: nowrap;
+  margin-left: auto;
+}
+.problem-chip:hover { background: #F9EDEB; }
+
+/* Separator */
+.separator {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+/* Cards */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  transition: border-color 0.12s;
+  cursor: default;
+}
+.card:hover { border-color: #D4D4D2; }
+
+.card-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.card-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+.card-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.card-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--canvas);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.status-badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+.status-badge.applied { background: #E8F4ED; color: var(--accent-success); }
+.status-badge.not-applied { background: var(--canvas); color: var(--text-secondary); }
+.status-badge.problem { background: #FDF6F5; color: var(--accent-error); }
+
+.card-action {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.card-action:hover { background: var(--canvas); }
+.card-action.withdraw { color: var(--accent-error); border-color: #F0DDD8; }
+
+/* Sticky Action Bar */
+.sticky-bar {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 16px -24px -20px;
+}
+.sticky-bar.hidden { display: none; }
+
+/* Old specific */
+.old-toolbar .toolbar-row-3 {
+  transition: all 0.2s;
+  overflow: hidden;
+}
+.old-toolbar .toolbar-row-3.collapsed {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+}
+
+/* Note callout */
+.note {
+  background: #FFFCF5;
+  border: 1px solid #F0E6CC;
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-size: 11px;
+  color: #8B7340;
+  margin-bottom: 16px;
+  line-height: 1.6;
+}
+.note strong { color: #6B5528; }
+
+/* Spacer */
+.spacer { flex: 1; }
+
+/* Annotation */
+.annotation {
+  font-size: 10px;
+  color: var(--accent-error);
+  background: #FDF6F5;
+  padding: 2px 6px;
+  border-radius: 3px;
+  position: absolute;
+  white-space: nowrap;
+}
+
+.height-indicator {
+  position: absolute;
+  right: -8px;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 2px;
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+  .split-mode .panel { padding: 16px; }
+  .card-grid { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- Toggle Bar -->
+<div class="toggle-bar">
+  <span>影子 · 工具栏方案对比</span>
+  <button class="toggle-btn active" onclick="setView('split')">并排对比</button>
+  <button class="toggle-btn" onclick="setView('old')">仅旧方案</button>
+  <button class="toggle-btn" onclick="setView('new')">仅新方案</button>
+</div>
+
+<div class="app-shell">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-item active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      <span>技能</span>
+    </div>
+    <div class="sidebar-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+      <span>目标</span>
+    </div>
+    <div class="sidebar-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+      <span>设置</span>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-content split-mode" id="mainContent">
+    
+    <!-- OLD Panel -->
+    <div class="panel visible" id="oldPanel">
+      <span class="panel-label old">旧方案 — 三行工具栏</span>
+      
+      <div class="note">
+        <strong>问题：</strong>① 目标选择与标签筛选使用相同 chip 语言，实际是模式切换 ② 状态行动态出现导致高度跳动 ③ 「不限」「全部」「全部」命名混淆
+      </div>
+
+      <div class="toolbar old-toolbar">
+        <!-- Row 1 -->
+        <div class="toolbar-row">
+          <div class="search-wrap">
+            <input class="search-input" placeholder="搜索技能…" />
+          </div>
+          <button class="btn" id="oldBatchBtn" style="display:none">批量应用</button>
+          <button class="btn">＋ 导入技能</button>
+        </div>
+        <!-- Row 2: Tags -->
+        <div class="toolbar-row">
+          <div class="chip-group">
+            <span class="chip active" onclick="oldTagClick(this)">全部</span>
+            <span class="chip" onclick="oldTagClick(this)">代码</span>
+            <span class="chip" onclick="oldTagClick(this)">文档</span>
+            <span class="chip" onclick="oldTagClick(this)">效率</span>
+            <span class="chip" onclick="oldTagClick(this)">运维</span>
+          </div>
+        </div>
+        <!-- Row 3: Target + Status (collapsible) -->
+        <div class="toolbar-row" id="oldRow3">
+          <div class="chip-group">
+            <span class="chip active" onclick="oldTargetClick(this, false)">不限</span>
+            <span class="chip" onclick="oldTargetClick(this, true)">全局目录</span>
+            <span class="chip" onclick="oldTargetClick(this, true)">项目A</span>
+          </div>
+          <div class="separator"></div>
+          <div class="chip-group" id="oldStatusGroup" style="display:none">
+            <span class="chip active" onclick="oldStatusClick(this)">全部</span>
+            <span class="chip" onclick="oldStatusClick(this)">已应用</span>
+            <span class="chip" onclick="oldStatusClick(this)">未应用</span>
+            <span class="chip" onclick="oldStatusClick(this)">有问题</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cards -->
+      <div class="card-grid" id="oldCards"></div>
+    </div>
+
+    <!-- NEW Panel -->
+    <div class="panel visible" id="newPanel">
+      <span class="panel-label new">新方案 — 两行稳定工具栏</span>
+
+      <div class="note">
+        <strong>改进：</strong>① 目标选择提升为 dropdown，与标签筛选彻底分离 ② 固定两行高度，不再跳动 ③ 问题提示按需出现但不占行高 ④ 底部 sticky bar 承载批量操作
+      </div>
+
+      <div class="toolbar">
+        <!-- Row 1: Search + Dropdown + Import -->
+        <div class="toolbar-row">
+          <div class="search-wrap">
+            <input class="search-input" placeholder="搜索技能…" />
+          </div>
+          <div class="dropdown-wrap" id="targetDropdown">
+            <div class="dropdown-trigger" onclick="toggleDropdown()">
+              <span class="label">管理:</span>
+              <span id="dropdownValue">全部技能</span>
+              <span class="arrow">▾</span>
+            </div>
+            <div class="dropdown-menu" id="dropdownMenu">
+              <div class="dropdown-item active" onclick="selectTarget('全部技能')">全部技能</div>
+              <div class="dropdown-item" onclick="selectTarget('全局目录')">全局目录</div>
+              <div class="dropdown-item" onclick="selectTarget('项目: skill管理器')">项目: skill管理器</div>
+            </div>
+          </div>
+          <button class="btn btn-compact" title="导入技能">＋</button>
+        </div>
+        <!-- Row 2: Tag filter + problem indicator -->
+        <div class="toolbar-row">
+          <div class="chip-group">
+            <span class="chip active" onclick="newTagClick(this)">全部</span>
+            <span class="chip" onclick="newTagClick(this)">代码</span>
+            <span class="chip" onclick="newTagClick(this)">文档</span>
+            <span class="chip" onclick="newTagClick(this)">效率</span>
+            <span class="chip" onclick="newTagClick(this)">运维</span>
+          </div>
+          <div class="spacer"></div>
+          <span class="problem-chip" id="problemChip" style="display:none" onclick="filterProblems()">⚠ <span id="problemCount">2</span> 个问题</span>
+        </div>
+      </div>
+
+      <!-- Cards -->
+      <div class="card-grid" id="newCards"></div>
+
+      <!-- Sticky Action Bar -->
+      <div class="sticky-bar hidden" id="stickyBar">
+        <span id="stickyInfo">已选择目标: 全局目录 · 4 个技能未应用</span>
+        <button class="btn btn-primary">批量应用</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Mock Data
+const skills = [
+  { name: 'Git 工作流', desc: '规范化 commit、分支策略与 MR 流程', tags: ['代码', '效率'], status: 'applied' },
+  { name: 'API 文档生成', desc: '从代码注释自动生成接口文档', tags: ['文档', '代码'], status: 'not-applied' },
+  { name: '代码审查', desc: '结构化 review 清单与常见问题检查', tags: ['代码'], status: 'applied' },
+  { name: '单元测试助手', desc: '生成测试用例模板与覆盖率建议', tags: ['代码'], status: 'not-applied' },
+  { name: '性能优化', desc: '前端性能分析与优化建议清单', tags: ['代码', '效率'], status: 'problem' },
+  { name: '日志分析', desc: '结构化日志解析与异常模式识别', tags: ['运维'], status: 'problem' },
+];
+
+const statusLabels = { 'applied': '已应用', 'not-applied': '未应用', 'problem': '有问题' };
+const statusClasses = { 'applied': 'applied', 'not-applied': 'not-applied', 'problem': 'problem' };
+const actionLabels = { 'applied': '收回', 'not-applied': '应用', 'problem': '修复' };
+
+// State
+let newTarget = '全部技能';
+let oldHasTarget = false;
+
+// View Toggle
+function setView(mode) {
+  const btns = document.querySelectorAll('.toggle-btn');
+  btns.forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+
+  const main = document.getElementById('mainContent');
+  const oldPanel = document.getElementById('oldPanel');
+  const newPanel = document.getElementById('newPanel');
+
+  main.classList.remove('split-mode');
+  oldPanel.classList.remove('visible');
+  newPanel.classList.remove('visible');
+
+  if (mode === 'split') {
+    main.classList.add('split-mode');
+    oldPanel.classList.add('visible');
+    newPanel.classList.add('visible');
+  } else if (mode === 'old') {
+    oldPanel.classList.add('visible');
+  } else {
+    newPanel.classList.add('visible');
+  }
+}
+
+// OLD Panel Logic
+function oldTagClick(el) {
+  el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function oldTargetClick(el, hasTarget) {
+  el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  oldHasTarget = hasTarget;
+  
+  const statusGroup = document.getElementById('oldStatusGroup');
+  const batchBtn = document.getElementById('oldBatchBtn');
+  statusGroup.style.display = hasTarget ? 'flex' : 'none';
+  batchBtn.style.display = hasTarget ? 'inline-flex' : 'none';
+  
+  renderOldCards();
+}
+
+function oldStatusClick(el) {
+  el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function renderOldCards() {
+  const container = document.getElementById('oldCards');
+  container.innerHTML = skills.map(s => `
+    <div class="card">
+      <div class="card-name">${s.name}</div>
+      <div class="card-desc">${s.desc}</div>
+      <div class="card-tags">${s.tags.map(t => `<span class="card-tag">${t}</span>`).join('')}</div>
+      ${oldHasTarget ? `
+        <div class="card-footer">
+          <span class="status-badge ${statusClasses[s.status]}">${statusLabels[s.status]}</span>
+          <button class="card-action ${s.status === 'applied' ? 'withdraw' : ''}">${actionLabels[s.status]}</button>
+        </div>
+      ` : ''}
+    </div>
+  `).join('');
+}
+
+// NEW Panel Logic
+function toggleDropdown() {
+  const menu = document.getElementById('dropdownMenu');
+  menu.classList.toggle('open');
+  
+  // Close on outside click
+  if (menu.classList.contains('open')) {
+    setTimeout(() => {
+      document.addEventListener('click', closeDropdown);
+    }, 0);
+  }
+}
+
+function closeDropdown(e) {
+  const wrap = document.getElementById('targetDropdown');
+  if (!wrap.contains(e.target)) {
+    document.getElementById('dropdownMenu').classList.remove('open');
+    document.removeEventListener('click', closeDropdown);
+  }
+}
+
+function selectTarget(target) {
+  newTarget = target;
+  document.getElementById('dropdownValue').textContent = target;
+  document.getElementById('dropdownMenu').classList.remove('open');
+  document.removeEventListener('click', closeDropdown);
+  
+  // Update dropdown items
+  document.querySelectorAll('#dropdownMenu .dropdown-item').forEach(item => {
+    item.classList.toggle('active', item.textContent === target);
+  });
+  
+  // Show/hide problem chip and sticky bar
+  const hasTarget = target !== '全部技能';
+  const problemCount = skills.filter(s => s.status === 'problem').length;
+  document.getElementById('problemChip').style.display = hasTarget && problemCount > 0 ? 'inline-flex' : 'none';
+  document.getElementById('problemCount').textContent = problemCount;
+  
+  const stickyBar = document.getElementById('stickyBar');
+  stickyBar.classList.toggle('hidden', !hasTarget);
+  if (hasTarget) {
+    const notApplied = skills.filter(s => s.status === 'not-applied').length;
+    document.getElementById('stickyInfo').textContent = `已选择目标: ${target} · ${notApplied} 个技能未应用`;
+  }
+  
+  renderNewCards();
+}
+
+function newTagClick(el) {
+  el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function filterProblems() {
+  // Simulate filtering to only problem skills
+  const container = document.getElementById('newCards');
+  const problemSkills = skills.filter(s => s.status === 'problem');
+  container.innerHTML = problemSkills.map(s => renderNewCard(s)).join('');
+}
+
+function renderNewCard(s) {
+  const hasTarget = newTarget !== '全部技能';
+  return `
+    <div class="card">
+      <div class="card-name">${s.name}</div>
+      <div class="card-desc">${s.desc}</div>
+      <div class="card-tags">${s.tags.map(t => `<span class="card-tag">${t}</span>`).join('')}</div>
+      ${hasTarget ? `
+        <div class="card-footer">
+          <span class="status-badge ${statusClasses[s.status]}">${statusLabels[s.status]}</span>
+          <button class="card-action ${s.status === 'applied' ? 'withdraw' : ''}">${actionLabels[s.status]}</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderNewCards() {
+  const container = document.getElementById('newCards');
+  container.innerHTML = skills.map(s => renderNewCard(s)).join('');
+}
+
+// Init
+renderOldCards();
+renderNewCards();
+</script>
+</body>
+</html>

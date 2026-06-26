@@ -10,23 +10,26 @@ import {
   withdrawSkill,
   adoptSkillFromTarget,
   removeUnmanagedSkill,
-  addProject,
-  removeProject,
-  addGlobalDir,
-  removeGlobalDir,
+  addTarget,
+  removeTarget,
   openPath,
   importSkillsFromPackage,
   scanSkillPackage,
   setSkillTags,
   getAllTags,
+  getAllTagsInfo,
+  renameTag,
+  setTagColor,
+  deleteTag,
+  reorderTag,
 } from "./api";
 import type {
   AppState,
   Skill,
   Target,
   TargetSkillStatus,
-  ViewKey,
   SkillStatusV2,
+  TagInfo,
 } from "./types";
 
 // ────────────────────────────────────────
@@ -35,7 +38,6 @@ import type {
 
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
-  const [view, setView] = useState<ViewKey>("skills");
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
@@ -52,70 +54,117 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar view={view} onViewChange={setView} />
       <div className="main-content">
-        <div className="drag-area" />
-        {view === "skills" && <SkillView state={state} refresh={refresh} />}
-        {view === "targets" && <TargetView state={state} refresh={refresh} />}
-        {view === "settings" && <SettingsView state={state} refresh={refresh} />}
+        <SkillView state={state} refresh={refresh} />
       </div>
     </div>
   );
 }
 
 // ────────────────────────────────────────
-// Sidebar
-// ────────────────────────────────────────
-
-const NAV_ITEMS: Array<{ key: ViewKey; label: string }> = [
-  { key: "skills", label: "技能" },
-  { key: "targets", label: "目标" },
-  { key: "settings", label: "设置" },
-];
-
-function Sidebar({ view, onViewChange }: { view: ViewKey; onViewChange: (v: ViewKey) => void }) {
-  return (
-    <aside className="sidebar">
-      <div className="sidebar-label">影子</div>
-      {NAV_ITEMS.map(item => (
-        <div
-          key={item.key}
-          className={`sidebar-item ${view === item.key ? "active" : ""}`}
-          onClick={() => onViewChange(item.key)}
-        >
-          {item.label}
-        </div>
-      ))}
-    </aside>
-  );
-}
-
-// ────────────────────────────────────────
-// Skill View
+// Skill View (unified: browsing + target operations)
 // ────────────────────────────────────────
 
 function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise<void> }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [showDeploy, setShowDeploy] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; skill: Skill } | null>(null);
   const [knownTags, setKnownTags] = useState<string[]>([]);
+  const [targetDropdownOpen, setTargetDropdownOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<SkillStatusV2 | null>(null);
+  const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
+  const statusDropdownRef = useRef<HTMLDivElement>(null);
+  const targetDropdownRef = useRef<HTMLDivElement>(null);
+  const [tagManageOpen, setTagManageOpen] = useState(false);
+  const [tagsInfo, setTagsInfo] = useState<TagInfo[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
 
   // Load all known tags
   useEffect(() => {
     getAllTags().then(setKnownTags);
+    getAllTagsInfo().then(setTagsInfo);
   }, [state.skills]);
+
+  // Build a color map: tag name → colorIndex (from tagsInfo, fallback to hash)
+  const tagColorMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const t of tagsInfo) {
+      if (t.colorIndex >= 0) map.set(t.name, t.colorIndex);
+    }
+    return map;
+  }, [tagsInfo]);
 
   const allTags = useMemo(() => {
     const tags = new Set<string>();
     state.skills.forEach(s => s.tags.forEach(t => tags.add(t)));
-    return Array.from(tags).sort();
-  }, [state.skills]);
+    const tagList = Array.from(tags);
+    // Sort by tagsInfo sort_order, fallback to alphabetical
+    const orderMap = new Map(tagsInfo.map((t, i) => [t.name, t.sortOrder ?? i]));
+    tagList.sort((a, b) => {
+      const oa = orderMap.get(a) ?? 9999;
+      const ob = orderMap.get(b) ?? 9999;
+      if (oa !== ob) return oa - ob;
+      return a.localeCompare(b);
+    });
+    return tagList;
+  }, [state.skills, tagsInfo]);
+
+  // Current target's statuses
+  const targetStatuses = useMemo(() => {
+    if (!activeTargetId) return null;
+    return state.targetStatuses.get(activeTargetId) ?? [];
+  }, [state.targetStatuses, activeTargetId]);
+
+  // Build a map: skillId → status for the active target
+  const skillStatusMap = useMemo(() => {
+    if (!targetStatuses) return null;
+    const map = new Map<string, TargetSkillStatus>();
+    for (const s of targetStatuses) {
+      map.set(s.skillId, s);
+    }
+    return map;
+  }, [targetStatuses]);
+
+  const activeTarget = useMemo(
+    () => state.targets.find(t => t.id === activeTargetId) ?? null,
+    [state.targets, activeTargetId]
+  );
+
+  // Count statuses in current target
+  const statusCounts = useMemo(() => {
+    if (!skillStatusMap) return null;
+    let applied = 0, notApplied = 0, problem = 0;
+    for (const s of skillStatusMap.values()) {
+      if (s.status === "applied") applied++;
+      else if (s.status === "notApplied") notApplied++;
+      else if (s.status === "problem") problem++;
+    }
+    return { applied, notApplied, problem, total: applied + notApplied + problem };
+  }, [skillStatusMap]);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (targetDropdownRef.current && !targetDropdownRef.current.contains(e.target as Node)) {
+        setTargetDropdownOpen(false);
+      }
+      if (statusDropdownRef.current && !statusDropdownRef.current.contains(e.target as Node)) {
+        setStatusDropdownOpen(false);
+      }
+    };
+    if (targetDropdownOpen || statusDropdownOpen) {
+      document.addEventListener("mousedown", handler);
+      return () => document.removeEventListener("mousedown", handler);
+    }
+  }, [targetDropdownOpen, statusDropdownOpen]);
 
   const filtered = useMemo(() => {
     let list = state.skills;
+    // Text search
     if (search) {
       const q = search.toLowerCase();
       list = list.filter(s =>
@@ -124,11 +173,32 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
         s.name.toLowerCase().includes(q)
       );
     }
+    // Tag filter
     if (activeTag) {
       list = list.filter(s => s.tags.includes(activeTag));
     }
+    // Status filter (only when target selected)
+    if (statusFilter && skillStatusMap) {
+      list = list.filter(s => {
+        const st = skillStatusMap.get(s.id);
+        return st?.status === statusFilter;
+      });
+    }
     return list;
-  }, [state.skills, search, activeTag]);
+  }, [state.skills, search, activeTag, statusFilter, skillStatusMap]);
+
+  // Batch stats: count applied/notApplied in current filtered results
+  const batchStats = useMemo(() => {
+    if (!skillStatusMap) return null;
+    let applied = 0;
+    let notApplied = 0;
+    for (const skill of filtered) {
+      const st = skillStatusMap.get(skill.id);
+      if (!st || st.status === "notApplied") notApplied++;
+      else if (st.status === "applied") applied++;
+    }
+    return { applied, notApplied, total: filtered.length };
+  }, [filtered, skillStatusMap]);
 
   const selected = useMemo(
     () => state.skills.find(s => s.id === selectedId) ?? null,
@@ -159,44 +229,269 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
     setContextMenu(null);
   };
 
+  // Target operations (inline on card)
+  const handleDeploy = async (skillId: string) => {
+    if (!activeTarget) return;
+    try {
+      await deploySkill(skillId, [{ targetId: activeTarget.id }], true);
+      await refresh();
+    } catch (e: any) {
+      alert(e?.message || e);
+    }
+  };
+
+  const handleWithdraw = async (skillId: string) => {
+    if (!activeTarget) return;
+    try {
+      await withdrawSkill(skillId, [{ targetId: activeTarget.id }]);
+      await refresh();
+    } catch (e: any) {
+      alert(e?.message || e);
+    }
+  };
+
+  // Batch actions on current filtered results
+  const handleBatchDeploy = async () => {
+    if (!activeTarget || !skillStatusMap) return;
+    const target = { targetId: activeTarget.id };
+    const toDeploy = filtered.filter(s => {
+      const st = skillStatusMap.get(s.id);
+      return !st || st.status === "notApplied";
+    });
+    for (const skill of toDeploy) {
+      await deploySkill(skill.id, [target], true);
+    }
+    await refresh();
+  };
+
+  const handleBatchWithdraw = async () => {
+    if (!activeTarget || !skillStatusMap) return;
+    const target = { targetId: activeTarget.id };
+    const toWithdraw = filtered.filter(s => {
+      const st = skillStatusMap.get(s.id);
+      return st?.status === "applied";
+    });
+    for (const skill of toWithdraw) {
+      await withdrawSkill(skill.id, [target]);
+    }
+    await refresh();
+  };
+
+  // Reset problem filter when target deselected
+  const handleTargetChange = (targetId: string | null) => {
+    setActiveTargetId(targetId);
+    setStatusFilter(null);
+    setStatusDropdownOpen(false);
+    setTargetDropdownOpen(false);
+  };
+
   return (
     <>
       {/* Toolbar */}
       <div className="toolbar">
+        {/* Row 1: Target + Search + Import + Settings */}
         <div className="toolbar-row">
+          {state.targets.length > 0 && (
+            <div className="target-dropdown" ref={targetDropdownRef}>
+              <button
+                className="target-dropdown-trigger"
+                onClick={() => setTargetDropdownOpen(!targetDropdownOpen)}
+              >
+                <span className="target-dropdown-label">
+                  {activeTarget ? activeTarget.name : "全部技能"}
+                </span>
+                <span className="target-dropdown-chevron">‹</span>
+              </button>
+              {targetDropdownOpen && (
+                <div className="target-dropdown-menu">
+                  <div
+                    className={`target-dropdown-item ${!activeTargetId ? "active" : ""}`}
+                    onClick={() => handleTargetChange(null)}
+                  >
+                    全部技能
+                  </div>
+                  {state.targets.map(t => (
+                    <div
+                      key={t.id}
+                      className={`target-dropdown-item ${activeTargetId === t.id ? "active" : ""}`}
+                      onClick={() => handleTargetChange(t.id)}
+                    >
+                      <span>{t.name}</span>
+                      <span className="target-dropdown-path">{shortenPath(t.path)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <input
             className="search-input"
             placeholder="搜索技能…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
-          <button className="btn btn-primary" onClick={() => setShowImport(true)}>
-            导入技能
+          <button className="btn-icon" onClick={() => setShowImport(true)} title="导入技能">
+            ＋
+          </button>
+          <button className="btn-icon" onClick={() => setShowSettings(true)} title="设置">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
           </button>
         </div>
-        {allTags.length > 0 && (
+
+        {/* Row 2: Tag filter + Status dropdown */}
+        {(allTags.length > 0 || activeTargetId) && (
           <div className="filter-row">
-            <button
-              className={`filter-chip ${!activeTag ? "active" : ""}`}
-              onClick={() => setActiveTag(null)}
-            >
-              全部
-            </button>
-            {allTags.map(tag => (
-              <button
-                key={tag}
-                className={`filter-chip ${activeTag === tag ? "active" : ""}`}
-                onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-              >
-                {tag}
-              </button>
-            ))}
+            {allTags.length > 0 && (
+              <>
+                <button
+                  className={`filter-chip ${!activeTag ? "active" : ""}`}
+                  onClick={() => { setActiveTag(null); setStatusFilter(null); }}
+                >
+                  全部
+                </button>
+                {allTags.map(tag => (
+                  <button
+                    key={tag}
+                    className={`filter-chip ${activeTag === tag ? "active" : ""}`}
+                    onClick={() => { setActiveTag(activeTag === tag ? null : tag); }}
+                  >
+                    <span className="filter-chip-dot" style={{ background: TAG_PALETTE[resolveTagColor(tag, tagColorMap)]?.bg }} />
+                    {tag}
+                  </button>
+                ))}
+                <button
+                  className={`manage-tags-pencil ${tagManageOpen ? "active" : ""}`}
+                  onClick={() => setTagManageOpen(!tagManageOpen)}
+                  title="管理标签"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                    <path d="m15 5 4 4" />
+                  </svg>
+                </button>
+              </>
+            )}
+            {activeTargetId && statusCounts && (
+              <div className="status-dropdown" ref={statusDropdownRef}>
+                <button
+                  className={`status-dropdown-trigger ${statusFilter ? "active" : ""}`}
+                  onClick={() => setStatusDropdownOpen(!statusDropdownOpen)}
+                >
+                  <span className="status-dropdown-label">
+                    {statusFilter === "applied" ? `已应用 · ${statusCounts.applied}` :
+                     statusFilter === "notApplied" ? `未应用 · ${statusCounts.notApplied}` :
+                     statusFilter === "problem" ? `有问题 · ${statusCounts.problem}` :
+                     `全部状态 · ${statusCounts.total}`}
+                  </span>
+                  <span className="status-dropdown-chevron">{statusDropdownOpen ? "▴" : "▾"}</span>
+                </button>
+                {statusDropdownOpen && (
+                  <div className="status-dropdown-menu">
+                    <div
+                      className={`status-dropdown-item ${!statusFilter ? "active" : ""}`}
+                      onClick={() => { setStatusFilter(null); setStatusDropdownOpen(false); }}
+                    >
+                      全部状态 · {statusCounts.total}
+                    </div>
+                    <div
+                      className={`status-dropdown-item ${statusFilter === "applied" ? "active" : ""}`}
+                      onClick={() => { setStatusFilter("applied"); setStatusDropdownOpen(false); }}
+                    >
+                      <span className="status-dot applied" />
+                      已应用 · {statusCounts.applied}
+                    </div>
+                    <div
+                      className={`status-dropdown-item ${statusFilter === "notApplied" ? "active" : ""}`}
+                      onClick={() => { setStatusFilter("notApplied"); setStatusDropdownOpen(false); }}
+                    >
+                      <span className="status-dot not-applied" />
+                      未应用 · {statusCounts.notApplied}
+                    </div>
+                    {statusCounts.problem > 0 && (
+                      <div
+                        className={`status-dropdown-item ${statusFilter === "problem" ? "active" : ""}`}
+                        onClick={() => { setStatusFilter("problem"); setStatusDropdownOpen(false); }}
+                      >
+                        <span className="status-dot problem" />
+                        有问题 · {statusCounts.problem}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+        )}
+
+        {/* Tag Management Panel (inline) */}
+        {tagManageOpen && (
+          <TagManagementPanel
+            tagsInfo={tagsInfo}
+            tagColorMap={tagColorMap}
+            onColorChange={async (tag, colorIndex) => {
+              const updated = await setTagColor(tag, colorIndex);
+              setTagsInfo(updated);
+            }}
+            onRename={async (oldName, newName) => {
+              await renameTag(oldName, newName);
+              await refresh();
+              const updated = await getAllTagsInfo();
+              setTagsInfo(updated);
+              if (activeTag === oldName) setActiveTag(newName);
+            }}
+            onDelete={async (tag) => {
+              await deleteTag(tag);
+              await refresh();
+              const updated = await getAllTagsInfo();
+              setTagsInfo(updated);
+              if (activeTag === tag) setActiveTag(null);
+            }}
+            onMove={async (tag, direction) => {
+              const updated = await reorderTag(tag, direction);
+              setTagsInfo(updated);
+            }}
+          />
         )}
       </div>
 
-      {/* Content: grid always visible */}
-      <SkillGrid skills={filtered} onSelect={setSelectedId} onContextMenu={handleContextMenu} />
+      {/* Content: grid */}
+      <SkillGrid
+        skills={filtered}
+        skillStatusMap={skillStatusMap}
+        hasActiveTarget={!!activeTargetId}
+        tagColorMap={tagColorMap}
+        onSelect={setSelectedId}
+        onContextMenu={handleContextMenu}
+        onDeploy={handleDeploy}
+        onWithdraw={handleWithdraw}
+      />
+
+      {/* Sticky bottom bar: batch actions on filtered results */}
+      {activeTargetId && batchStats && (batchStats.notApplied > 0 || batchStats.applied > 0) && (
+        <div className="sticky-action-bar">
+          <span className="sticky-action-label">
+            当前 {batchStats.total} 个技能
+            {batchStats.notApplied > 0 && <>：{batchStats.notApplied} 个未应用</>}
+            {batchStats.notApplied > 0 && batchStats.applied > 0 && " · "}
+            {batchStats.applied > 0 && <>{batchStats.applied} 个已应用</>}
+          </span>
+          <div className="sticky-action-buttons">
+            {batchStats.notApplied > 0 && (
+              <button className="btn btn-primary btn-sm" onClick={handleBatchDeploy}>
+                全部应用
+              </button>
+            )}
+            {batchStats.applied > 0 && (
+              <button className="btn btn-secondary btn-sm" onClick={handleBatchWithdraw}>
+                全部收回
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Drawer overlay */}
       {selected && (
@@ -204,8 +499,8 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
           skill={selected}
           state={state}
           knownTags={knownTags}
+          tagColorMap={tagColorMap}
           onClose={handleClose}
-          onDeploy={() => setShowDeploy(true)}
           refresh={refresh}
         />
       )}
@@ -238,6 +533,15 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
           onDone={refresh}
         />
       )}
+
+      {/* Settings Drawer */}
+      {showSettings && (
+        <SettingsDrawer
+          state={state}
+          refresh={refresh}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
     </>
   );
 }
@@ -246,44 +550,96 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
 
 function SkillGrid({
   skills,
+  skillStatusMap,
+  hasActiveTarget,
+  tagColorMap,
   onSelect,
   onContextMenu,
+  onDeploy,
+  onWithdraw,
 }: {
   skills: Skill[];
+  skillStatusMap: Map<string, TargetSkillStatus> | null;
+  hasActiveTarget: boolean;
+  tagColorMap: Map<string, number>;
   onSelect: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, skill: Skill) => void;
+  onDeploy: (skillId: string) => void;
+  onWithdraw: (skillId: string) => void;
 }) {
   if (skills.length === 0) {
     return <div className="empty-state">暂无技能</div>;
   }
   return (
     <div className="skill-grid">
-      {skills.map((skill, i) => (
-        <div
-          key={skill.id}
-          className="skill-card"
-          style={{ animationDelay: `${i * 60}ms` }}
-          onClick={() => onSelect(skill.id)}
-          onContextMenu={(e) => onContextMenu(e, skill)}
-        >
-          <div className="card-title">{skill.displayName}</div>
-          <div className="card-desc">{skill.description}</div>
-          <div className="card-meta">
-            {skill.enabledCount > 0 && (
-              <span className="tag tag-applied">已应用 {skill.enabledCount}</span>
+      {skills.map((skill, i) => {
+        const status = skillStatusMap?.get(skill.id);
+        return (
+          <div
+            key={skill.id}
+            className={`skill-card ${hasActiveTarget ? "has-target" : ""}`}
+            style={{ animationDelay: `${i * 60}ms` }}
+            onClick={() => onSelect(skill.id)}
+            onContextMenu={(e) => onContextMenu(e, skill)}
+          >
+            {/* Header: title + status position (always reserved) */}
+            <div className="card-header">
+              <div className="card-title">{skill.displayName}</div>
+              <div className="card-status-slot">
+                {hasActiveTarget && status ? (
+                  <span className={`card-status-badge ${statusClass(status.status)}`}>
+                    <span className={`status-dot ${statusClass(status.status)}`} />
+                    {statusLabel(status.status)}
+                  </span>
+                ) : (
+                  <>
+                    {skill.enabledCount > 0 && (
+                      <span className="card-stat-text">应用 {skill.enabledCount}</span>
+                    )}
+                    {skill.issueCount > 0 && (
+                      <span className="card-stat-text problem">问题 {skill.issueCount}</span>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="card-desc">{skill.description}</div>
+
+            {/* Footer: tags only + hover action overlay */}
+            <div className="card-footer">
+              <div className="card-tags">
+                {skill.tags.map(t => {
+                  const ci = resolveTagColor(t, tagColorMap);
+                  const p = TAG_PALETTE[ci];
+                  return (
+                    <span key={t} className="tag" style={{ background: p.bg, color: p.text }}>{t}</span>
+                  );
+                })}
+              </div>
+            </div>
+            {hasActiveTarget && status && (
+              <div className="card-hover-action" onClick={e => e.stopPropagation()}>
+                {status.status === "applied" && (
+                  <button className="btn btn-sm btn-secondary" onClick={() => onWithdraw(skill.id)}>
+                    收回
+                  </button>
+                )}
+                {status.status === "notApplied" && (
+                  <button className="btn btn-sm btn-primary" onClick={() => onDeploy(skill.id)}>
+                    应用
+                  </button>
+                )}
+                {status.status === "problem" && (
+                  <button className="btn btn-sm btn-primary" onClick={() => onDeploy(skill.id)}>
+                    覆盖
+                  </button>
+                )}
+              </div>
             )}
-            {skill.issueCount > 0 && (
-              <span className="tag tag-problem">问题 {skill.issueCount}</span>
-            )}
-            {skill.enabledCount === 0 && skill.issueCount === 0 && (
-              <span className="tag tag-not-applied">未应用</span>
-            )}
-            {skill.tags.map(t => (
-              <span key={t} className={`tag tag-color-${tagColorIndex(t)}`}>{t}</span>
-            ))}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -294,15 +650,15 @@ function SkillDrawer({
   skill,
   state,
   knownTags,
+  tagColorMap,
   onClose,
-  onDeploy,
   refresh,
 }: {
   skill: Skill;
   state: AppState;
   knownTags: string[];
+  tagColorMap: Map<string, number>;
   onClose: () => void;
-  onDeploy: () => void;
   refresh: () => Promise<void>;
 }) {
   const [deleting, setDeleting] = useState(false);
@@ -337,7 +693,7 @@ function SkillDrawer({
 
   // Focus trap: move focus into drawer on open
   useEffect(() => {
-    drawerRef.current?.focus();
+    drawerRef.current?.focus({ preventScroll: true });
   }, []);
 
   const handleDelete = async () => {
@@ -348,21 +704,27 @@ function SkillDrawer({
     window.location.reload();
   };
 
-  const handleWithdrawAll = async () => {
-    const deployedTargets = targetRows
-      .filter(r => r.status?.status === "applied")
-      .map(r => ({
-        agentId: r.target.kind === "global" ? r.target.id.replace("global-", "") : undefined,
-        projectId: r.target.kind === "project" ? r.target.id.replace("project-", "") : undefined,
-      }));
-    if (deployedTargets.length === 0) return;
-    await withdrawSkill(skill.id, deployedTargets);
-    await refresh();
-  };
-
   const handleTagsChange = async (newTags: string[]) => {
     await setSkillTags(skill.id, newTags);
     await refresh();
+  };
+
+  const handleInlineDeploy = async (target: Target) => {
+    try {
+      await deploySkill(skill.id, [{ targetId: target.id }], true);
+      await refresh();
+    } catch (e: any) {
+      alert(e?.message || e);
+    }
+  };
+
+  const handleInlineWithdraw = async (target: Target) => {
+    try {
+      await withdrawSkill(skill.id, [{ targetId: target.id }]);
+      await refresh();
+    } catch (e: any) {
+      alert(e?.message || e);
+    }
   };
 
   return (
@@ -376,7 +738,26 @@ function SkillDrawer({
         {/* Header */}
         <div className="drawer-header">
           <h2 className="drawer-title">{skill.displayName}</h2>
-          <span className="drawer-close" onClick={handleClose}>✕</span>
+          <div className="drawer-header-actions">
+            <button
+              className="drawer-icon-btn"
+              onClick={() => openPath(skill.path)}
+              title="打开目录"
+            >
+              <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </button>
+            <button
+              className="drawer-icon-btn danger"
+              onClick={handleDelete}
+              disabled={deleting}
+              title="删除"
+            >
+              <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+            <button className="drawer-icon-btn" onClick={handleClose}>
+              <svg viewBox="0 0 24 24"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
+            </button>
+          </div>
         </div>
 
         {/* Description */}
@@ -386,41 +767,45 @@ function SkillDrawer({
         <TagEditor
           tags={skill.tags}
           knownTags={knownTags}
+          tagColorMap={tagColorMap}
           onChange={handleTagsChange}
         />
 
-        {/* Actions */}
-        <div className="drawer-section">
-          <div className="drawer-actions">
-            <button className="btn btn-primary" onClick={onDeploy}>应用到…</button>
-            <div className="drawer-actions-row">
-              <button className="btn btn-secondary" onClick={handleWithdrawAll}>收回全部</button>
-              <button className="btn btn-secondary" onClick={() => openPath(skill.path)}>打开目录</button>
-              <button
-                className="btn btn-sm btn-danger"
-                onClick={handleDelete}
-                disabled={deleting}
-              >
-                删除
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Target status */}
+        {/* Target status with inline actions */}
         <div className="drawer-section">
           <div className="drawer-section-title">应用状态</div>
           {targetRows.map(({ target, status }) => {
             const s = status?.status ?? "notApplied";
             return (
-              <div key={target.id} className={`target-status-row ${statusClass(s)}`}>
-                <span>
+              <div key={target.id} className="target-action-row">
+                <span className="target-action-name">
                   <span className={`status-dot ${statusClass(s)}`} />
-                  {" "}{target.name}
+                  {target.name}
                 </span>
-                <span className={`status-label ${statusClass(s)}`}>
-                  {statusLabel(s)}
-                </span>
+                {s === "notApplied" && (
+                  <button
+                    className="row-action-btn apply"
+                    onClick={() => handleInlineDeploy(target)}
+                  >
+                    应用
+                  </button>
+                )}
+                {s === "applied" && (
+                  <button
+                    className="row-action-btn withdraw"
+                    onClick={() => handleInlineWithdraw(target)}
+                  >
+                    收回
+                  </button>
+                )}
+                {s === "problem" && (
+                  <button
+                    className="row-action-btn withdraw"
+                    onClick={() => handleInlineWithdraw(target)}
+                  >
+                    收回
+                  </button>
+                )}
               </div>
             );
           })}
@@ -455,10 +840,12 @@ function SkillDrawer({
 function TagEditor({
   tags,
   knownTags,
+  tagColorMap,
   onChange,
 }: {
   tags: string[];
   knownTags: string[];
+  tagColorMap: Map<string, number>;
   onChange: (tags: string[]) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -507,12 +894,16 @@ function TagEditor({
 
   return (
     <div className="tag-editor">
-      {tags.map(tag => (
-        <span key={tag} className={`tag-pill tag-color-${tagColorIndex(tag)}`}>
-          {tag}
-          <span className="tag-remove" onClick={() => handleRemove(tag)}>✕</span>
-        </span>
-      ))}
+      {tags.map(tag => {
+        const ci = resolveTagColor(tag, tagColorMap);
+        const p = TAG_PALETTE[ci];
+        return (
+          <span key={tag} className="tag-pill" style={{ background: p.bg, color: p.text }}>
+            {tag}
+            <span className="tag-remove" onClick={() => handleRemove(tag)}>✕</span>
+          </span>
+        );
+      })}
       {!editing ? (
         <button className="tag-add-btn" onClick={() => { setEditing(true); setTimeout(() => inputRef.current?.focus(), 50); }}>
           +
@@ -550,6 +941,144 @@ function TagEditor({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Tag Management Panel (inline below filter bar) ──
+
+function TagManagementPanel({
+  tagsInfo,
+  tagColorMap,
+  onColorChange,
+  onRename,
+  onDelete,
+  onMove,
+}: {
+  tagsInfo: TagInfo[];
+  tagColorMap: Map<string, number>;
+  onColorChange: (tag: string, colorIndex: number) => void;
+  onRename: (oldName: string, newName: string) => void;
+  onDelete: (tag: string) => void;
+  onMove: (tag: string, direction: "up" | "down") => void;
+}) {
+  const [editingTag, setEditingTag] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [pickerTag, setPickerTag] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  // Close picker on outside click
+  useEffect(() => {
+    if (!pickerTag) return;
+    const handler = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setPickerTag(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pickerTag]);
+
+  const handleRenameSubmit = (oldName: string) => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== oldName) {
+      onRename(oldName, trimmed);
+    }
+    setEditingTag(null);
+  };
+
+  return (
+    <div className="tag-manage-panel">
+      <div className="tag-manage-header">
+        <span className="tag-manage-title">标签管理</span>
+        <span className="tag-manage-hint">拖动排序 · 点击颜色修改 · 点击名称重命名</span>
+      </div>
+      <div className="tag-manage-list">
+        {tagsInfo.map((t, idx) => {
+          const ci = resolveTagColor(t.name, tagColorMap);
+          const p = TAG_PALETTE[ci];
+          return (
+            <div key={t.name} className="tag-manage-row">
+              <div className="tag-manage-color-wrap" style={{ position: "relative" }}>
+                <span
+                  className="tag-manage-dot"
+                  style={{ background: p.text }}
+                  onClick={() => setPickerTag(pickerTag === t.name ? null : t.name)}
+                />
+                {pickerTag === t.name && (
+                  <div className="tag-color-picker" ref={pickerRef}>
+                    {TAG_PALETTE.map((c, i) => (
+                      <span
+                        key={i}
+                        className={`tag-color-option ${i === ci ? "selected" : ""}`}
+                        style={{ background: c.text }}
+                        onClick={() => { onColorChange(t.name, i); setPickerTag(null); }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+              {editingTag === t.name ? (
+                <input
+                  className="tag-manage-name-input"
+                  value={editValue}
+                  autoFocus
+                  onChange={e => setEditValue(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") handleRenameSubmit(t.name);
+                    if (e.key === "Escape") setEditingTag(null);
+                  }}
+                  onBlur={() => handleRenameSubmit(t.name)}
+                />
+              ) : (
+                <span
+                  className="tag-manage-name"
+                  onClick={() => { setEditingTag(t.name); setEditValue(t.name); }}
+                >
+                  {t.name}
+                </span>
+              )}
+              <span className="tag-manage-count">{t.count} 个技能</span>
+              <span className="tag-manage-move">
+                <button
+                  className="tag-move-btn"
+                  disabled={idx === 0}
+                  onClick={() => onMove(t.name, "up")}
+                  title="上移"
+                >↑</button>
+                <button
+                  className="tag-move-btn"
+                  disabled={idx === tagsInfo.length - 1}
+                  onClick={() => onMove(t.name, "down")}
+                  title="下移"
+                >↓</button>
+              </span>
+              {confirmDelete === t.name ? (
+                <span className="tag-manage-confirm">
+                  <button className="tag-manage-confirm-btn" onClick={() => { onDelete(t.name); setConfirmDelete(null); }}>
+                    确认
+                  </button>
+                  <button className="tag-manage-cancel-btn" onClick={() => setConfirmDelete(null)}>
+                    取消
+                  </button>
+                </span>
+              ) : (
+                <button
+                  className="tag-manage-delete"
+                  onClick={() => setConfirmDelete(t.name)}
+                  title="删除标签"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {tagsInfo.length === 0 && (
+          <div className="tag-manage-empty">暂无标签，在技能详情中添加</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -620,295 +1149,78 @@ function SkillContextMenu({
 }
 
 // ────────────────────────────────────────
-// Target View
+// Settings Drawer
 // ────────────────────────────────────────
 
-function TargetView({ state, refresh }: { state: AppState; refresh: () => Promise<void> }) {
-  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(
-    state.targets[0]?.id ?? null
-  );
-  const [showBatchApply, setShowBatchApply] = useState(false);
-
-  const selectedTarget = state.targets.find(t => t.id === selectedTargetId) ?? null;
-  const statuses = selectedTargetId ? (state.targetStatuses.get(selectedTargetId) ?? []) : [];
-
-  // Sort: applied first, then problem, then not-applied
-  const sortedStatuses = useMemo(() => {
-    return [...statuses].sort((a, b) => {
-      const order: Record<SkillStatusV2, number> = { applied: 0, problem: 1, notApplied: 2 };
-      return order[a.status] - order[b.status];
-    });
-  }, [statuses]);
-
-  const handleDeploy = async (skillId: string) => {
-    if (!selectedTarget) return;
-    try {
-      const target = {
-        agentId: selectedTarget.kind === "global" ? selectedTarget.id.replace("global-", "") : undefined,
-        projectId: selectedTarget.kind === "project" ? selectedTarget.id.replace("project-", "") : undefined,
-      };
-      await deploySkill(skillId, [target], true);
-      await refresh();
-    } catch (e: any) {
-      alert(e?.message || e);
-    }
+function SettingsDrawer({ state, refresh, onClose }: { state: AppState; refresh: () => Promise<void>; onClose: () => void }) {
+  const handleAddTarget = async () => {
+    const selected = await open({ directory: true, title: "选择目标目录" });
+    if (!selected) return;
+    await addTarget(selected as string);
+    await refresh();
   };
 
-  const handleWithdraw = async (skillId: string) => {
-    if (!selectedTarget) return;
-    try {
-      const target = {
-        agentId: selectedTarget.kind === "global" ? selectedTarget.id.replace("global-", "") : undefined,
-        projectId: selectedTarget.kind === "project" ? selectedTarget.id.replace("project-", "") : undefined,
-      };
-      await withdrawSkill(skillId, [target]);
-      await refresh();
-    } catch (e: any) {
-      alert(e?.message || e);
-    }
-  };
-
-  const handleAdopt = async (skillName: string) => {
-    if (!selectedTarget) return;
-    try {
-      const agentId = selectedTarget.kind === "global" ? selectedTarget.id.replace("global-", "") : undefined;
-      const projectId = selectedTarget.kind === "project" ? selectedTarget.id.replace("project-", "") : undefined;
-      await adoptSkillFromTarget(agentId, projectId, skillName);
-      await refresh();
-    } catch (e: any) {
-      alert(e?.message || e);
-    }
-  };
-
-  const handleRemoveUnmanaged = async (targetPath: string) => {
-    if (!confirm("确认移除此非托管技能？该操作不可恢复。")) return;
-    try {
-      await removeUnmanagedSkill(targetPath);
-      await refresh();
-    } catch (e: any) {
-      alert(e?.message || e);
-    }
+  const handleRemoveTarget = async (id: string) => {
+    await removeTarget(id);
+    await refresh();
   };
 
   return (
-    <div className="target-view">
-      {/* Left: target list */}
-      <div className="target-list">
-        <div className="target-list-header">
-          <h3>目标</h3>
+    <div className="settings-drawer-backdrop" onClick={onClose}>
+      <aside className="settings-drawer" onClick={e => e.stopPropagation()}>
+        <div className="settings-drawer-header">
+          <h2>设置</h2>
+          <button className="settings-drawer-close" onClick={onClose}>✕</button>
         </div>
-        <div className="target-list-items">
-          {state.targets.map(target => (
-            <div
-              key={target.id}
-              className={`target-item ${target.id === selectedTargetId ? "active" : ""}`}
-              onClick={() => setSelectedTargetId(target.id)}
-            >
-              <div className="target-name">
-                <span className={`status-dot ${target.exists ? "applied" : "problem"}`} />
-                {target.name}
-              </div>
-              <div className="target-path">{shortenPath(target.path)}</div>
-              <div className="target-stats">
-                {target.appliedCount} 已应用 / {target.totalCount - target.appliedCount} 未应用
-              </div>
-            </div>
-          ))}
-          {state.targets.length === 0 && (
-            <div className="empty-state" style={{ padding: "24px" }}>
-              暂无目标，请在设置中添加
-            </div>
-          )}
-        </div>
-      </div>
+        <div className="settings-drawer-body">
 
-      {/* Right: target detail */}
-      {selectedTarget ? (
-        <div className="target-detail">
-          <div className="target-detail-header">
-            <h2>{selectedTarget.name}</h2>
-            <div className="meta">{selectedTarget.path}</div>
+          <div className="settings-section">
+            <div className="settings-section-label">技能根目录</div>
+            <div className="settings-path-card">
+              <div className="settings-path-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z"/></svg>
+              </div>
+              <div className="settings-path-info">
+                <div className="settings-path-name">主库</div>
+                <div className="settings-path-value">{state.skillsRoot}</div>
+              </div>
+              <button className="settings-path-action" onClick={() => openPath(state.skillsRoot)} title="打开">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </button>
+            </div>
+            <div className="settings-section-hint">所有技能以此目录为唯一事实源</div>
           </div>
-          <div className="target-skills-list">
-            {sortedStatuses.map(s => (
-              <div
-                key={s.id}
-                className={`target-skill-row ${statusClass(s.status)}`}
-              >
-                <div className="skill-info">
-                  <span className="skill-name">{s.displayName}</span>
-                  <span className="skill-desc">
-                    {s.issue || s.description}
-                  </span>
+
+          <div className="settings-section">
+            <div className="settings-section-label">目标目录</div>
+            {state.targets.map(t => (
+              <div key={t.id} className="settings-path-card">
+                <div className="settings-path-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z"/></svg>
                 </div>
-                <div className="skill-actions">
-                  <span className={`status-dot ${statusClass(s.status)}`} />
-                  {s.status === "applied" && (
-                    <button
-                      className="btn btn-sm btn-secondary"
-                      onClick={() => handleWithdraw(s.skillId)}
-                    >
-                      收回
-                    </button>
-                  )}
-                  {s.status === "notApplied" && (
-                    <button
-                      className="btn btn-sm btn-primary"
-                      onClick={() => handleDeploy(s.skillId)}
-                    >
-                      应用
-                    </button>
-                  )}
-                  {s.status === "problem" && (
-                    <button
-                      className="btn btn-sm btn-primary"
-                      onClick={() => handleDeploy(s.skillId)}
-                    >
-                      覆盖
-                    </button>
-                  )}
+                <div className="settings-path-info">
+                  <div className="settings-path-name">
+                    {t.name}
+                    {t.isDefault && <span className="settings-default-badge">默认</span>}
+                  </div>
+                  <div className="settings-path-value">{t.path}</div>
                 </div>
+                <button className="settings-path-action" onClick={() => openPath(t.path)} title="打开">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                </button>
+                {!t.isDefault && (
+                  <button className="settings-path-action settings-path-action-danger" onClick={() => handleRemoveTarget(t.id)} title="移除">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                  </button>
+                )}
               </div>
             ))}
+            <button className="settings-add-btn" onClick={handleAddTarget}>+ 添加目标</button>
+            <div className="settings-section-hint">技能通过软链接分发到目标目录</div>
           </div>
-          <div className="target-detail-footer">
-            <button
-              className="btn btn-primary"
-              onClick={() => setShowBatchApply(true)}
-            >
-              批量应用…
-            </button>
-            <button
-              className="btn btn-secondary"
-              onClick={() => openPath(selectedTarget.path)}
-            >
-              打开目录
-            </button>
-          </div>
+
         </div>
-      ) : (
-        <div className="target-detail">
-          <div className="empty-state">选择一个目标查看详情</div>
-        </div>
-      )}
-
-      {/* Batch apply modal */}
-      {showBatchApply && selectedTarget && (
-        <BatchApplyModal
-          target={selectedTarget}
-          skills={state.skills}
-          currentStatuses={statuses}
-          onClose={() => setShowBatchApply(false)}
-          onDone={refresh}
-        />
-      )}
-    </div>
-  );
-}
-
-// ────────────────────────────────────────
-// Settings View
-// ────────────────────────────────────────
-
-function SettingsView({ state, refresh }: { state: AppState; refresh: () => Promise<void> }) {
-  const handleAddProject = async () => {
-    const selected = await open({ directory: true, title: "选择项目目录" });
-    if (!selected) return;
-    await addProject(selected as string);
-    await refresh();
-  };
-
-  const handleAddGlobalDir = async () => {
-    const selected = await open({ directory: true, title: "选择全局目录" });
-    if (!selected) return;
-    await addGlobalDir(selected as string);
-    await refresh();
-  };
-
-  const handleRemoveProject = async (id: string) => {
-    await removeProject(id);
-    await refresh();
-  };
-
-  const handleRemoveGlobalDir = async (id: string) => {
-    await removeGlobalDir(id);
-    await refresh();
-  };
-
-  return (
-    <div className="settings-view">
-      <h2>设置</h2>
-
-      <div className="settings-section">
-        <h3>技能根目录</h3>
-        <div className="settings-row">
-          <span className="path">{state.skillsRoot}</span>
-          <button className="btn btn-sm btn-secondary" onClick={() => openPath(state.skillsRoot)}>
-            打开
-          </button>
-        </div>
-      </div>
-
-      <div className="settings-section">
-        <h3>全局目录</h3>
-        {state.targets
-          .filter(t => t.kind === "global")
-          .map(t => (
-            <div key={t.id} className="settings-row">
-              <span className="path">{t.path}</span>
-              <div style={{ display: "flex", gap: "6px" }}>
-                <button className="btn btn-sm btn-secondary" onClick={() => openPath(t.path)}>
-                  打开
-                </button>
-                <button
-                  className="btn btn-sm btn-secondary"
-                  onClick={() => handleRemoveGlobalDir(t.id.replace("global-", ""))}
-                >
-                  移除
-                </button>
-              </div>
-            </div>
-          ))}
-        <button
-          className="btn btn-secondary"
-          style={{ marginTop: "8px" }}
-          onClick={handleAddGlobalDir}
-        >
-          + 添加全局目录
-        </button>
-      </div>
-
-      <div className="settings-section">
-        <h3>项目</h3>
-        {state.targets
-          .filter(t => t.kind === "project")
-          .map(t => (
-            <div key={t.id} className="settings-row">
-              <div>
-                <div style={{ fontWeight: 500, fontSize: "12px" }}>{t.name}</div>
-                <span className="path">{t.path}</span>
-              </div>
-              <div style={{ display: "flex", gap: "6px" }}>
-                <button className="btn btn-sm btn-secondary" onClick={() => openPath(t.path)}>
-                  打开
-                </button>
-                <button
-                  className="btn btn-sm btn-secondary"
-                  onClick={() => handleRemoveProject(t.id.replace("project-", ""))}
-                >
-                  移除
-                </button>
-              </div>
-            </div>
-          ))}
-        <button
-          className="btn btn-secondary"
-          style={{ marginTop: "8px" }}
-          onClick={handleAddProject}
-        >
-          + 添加项目
-        </button>
-      </div>
+      </aside>
     </div>
   );
 }
@@ -925,8 +1237,10 @@ function ImportModal({
   onDone: () => void;
 }) {
   const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSelect = async () => {
+    setError(null);
     const selected = await open({
       directory: true,
       title: "选择包含 SKILL.md 的文件夹或 .zip 压缩包",
@@ -948,27 +1262,61 @@ function ImportModal({
       }
       onDone();
     } catch (e) {
-      alert(`导入失败：${e}`);
+      setError(`导入失败：${e}`);
     } finally {
       setImporting(false);
     }
   };
 
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3>导入技能</h3>
-        <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "16px" }}>
-          选择包含 SKILL.md 的文件夹，或 .zip 压缩包。技能将导入到主库后再分发。
-        </p>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            className="btn btn-primary"
-            onClick={handleSelect}
-            disabled={importing}
-          >
-            {importing ? "导入中…" : "选择文件夹或压缩包"}
+      <div className="modal import-modal" onClick={e => e.stopPropagation()}>
+        <div className="import-modal-header">
+          <h3>导入技能</h3>
+          <button className="import-modal-close" onClick={onClose} aria-label="关闭">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M1.5 1.5L12.5 12.5M12.5 1.5L1.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
           </button>
+        </div>
+
+        <button
+          className="import-zone"
+          onClick={handleSelect}
+          disabled={importing}
+          type="button"
+        >
+          {importing ? (
+            <div className="import-zone-content">
+              <div className="import-spinner" />
+              <span className="import-zone-label">正在导入…</span>
+            </div>
+          ) : (
+            <div className="import-zone-content">
+              <svg className="import-zone-icon" width="32" height="32" viewBox="0 0 32 32" fill="none">
+                <path d="M4 13V25C4 26.1 4.9 27 6 27H26C27.1 27 28 26.1 28 25V13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M4 13L7.5 6H24.5L28 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M4 13H11L13 16H19L21 13H28" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <span className="import-zone-label">选择文件夹或压缩包</span>
+              <span className="import-zone-hint">包含 SKILL.md 的文件夹，或 .zip 压缩包</span>
+            </div>
+          )}
+        </button>
+
+        {error && <p className="import-error">{error}</p>}
+
+        <p className="import-note">导入后进入主库，需再手动分发到目标目录。</p>
+
+        <div className="import-modal-footer">
           <button className="btn btn-secondary" onClick={onClose}>取消</button>
         </div>
       </div>
@@ -1004,10 +1352,7 @@ function DeployModal({
     setDeploying(true);
     const deployTargets = targets
       .filter(t => checked.has(t.id))
-      .map(t => ({
-        agentId: t.kind === "global" ? t.id.replace("global-", "") : undefined,
-        projectId: t.kind === "project" ? t.id.replace("project-", "") : undefined,
-      }));
+      .map(t => ({ targetId: t.id }));
     await deploySkill(skill.id, deployTargets, true);
     await onDone();
     onClose();
@@ -1057,142 +1402,6 @@ function DeployModal({
   );
 }
 
-function BatchApplyModal({
-  target,
-  skills,
-  currentStatuses,
-  onClose,
-  onDone,
-}: {
-  target: Target;
-  skills: Skill[];
-  currentStatuses: TargetSkillStatus[];
-  onClose: () => void;
-  onDone: () => Promise<void>;
-}) {
-  // Only show skills not already applied
-  const notApplied = useMemo(() => {
-    const appliedIds = new Set(
-      currentStatuses.filter(s => s.status === "applied").map(s => s.skillId)
-    );
-    return skills.filter(s => !appliedIds.has(s.id));
-  }, [skills, currentStatuses]);
-
-  const allTags = useMemo(() => {
-    const tags = new Set<string>();
-    notApplied.forEach(s => s.tags.forEach(t => tags.add(t)));
-    return Array.from(tags).sort();
-  }, [notApplied]);
-
-  const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [activeFilterTag, setActiveFilterTag] = useState<string | null>(null);
-  const [deploying, setDeploying] = useState(false);
-
-  const toggle = (id: string) => {
-    setChecked(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const handleTagFilter = (tag: string) => {
-    if (activeFilterTag === tag) {
-      // Deactivate: uncheck skills that belong to this tag (that aren't in other active selections)
-      setActiveFilterTag(null);
-      const tagSkillIds = new Set(notApplied.filter(s => s.tags.includes(tag)).map(s => s.id));
-      setChecked(prev => {
-        const next = new Set(prev);
-        tagSkillIds.forEach(id => next.delete(id));
-        return next;
-      });
-    } else {
-      // Activate: check all skills with this tag
-      setActiveFilterTag(tag);
-      const tagSkillIds = notApplied.filter(s => s.tags.includes(tag)).map(s => s.id);
-      setChecked(prev => {
-        const next = new Set(prev);
-        tagSkillIds.forEach(id => next.add(id));
-        return next;
-      });
-    }
-  };
-
-  const handleDeploy = async () => {
-    if (checked.size === 0) return;
-    setDeploying(true);
-    const deployTarget = {
-      agentId: target.kind === "global" ? target.id.replace("global-", "") : undefined,
-      projectId: target.kind === "project" ? target.id.replace("project-", "") : undefined,
-    };
-    for (const skillId of checked) {
-      await deploySkill(skillId, [deployTarget], true);
-    }
-    await onDone();
-    onClose();
-  };
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <h3>批量应用到「{target.name}」</h3>
-        {notApplied.length === 0 ? (
-          <p style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-            所有技能已应用到此目标
-          </p>
-        ) : (
-          <>
-            {allTags.length > 0 && (
-              <div className="batch-tag-filter">
-                {allTags.map(tag => (
-                  <span
-                    key={tag}
-                    className={`batch-tag-chip ${activeFilterTag === tag ? "active" : ""}`}
-                    onClick={() => handleTagFilter(tag)}
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="batch-skill-list">
-              {notApplied.map(skill => (
-                <div
-                  key={skill.id}
-                  className="batch-skill-item"
-                  onClick={() => toggle(skill.id)}
-                >
-                  <div className={`batch-checkbox ${checked.has(skill.id) ? "checked" : ""}`} />
-                  <span className="batch-skill-name">{skill.displayName}</span>
-                  <div className="batch-skill-tags">
-                    {skill.tags.map(t => <span key={t}>{t}</span>)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-        <div className="batch-actions">
-          <span className="batch-count">
-            {checked.size > 0 ? `已选 ${checked.size} 个` : `${notApplied.length} 个可应用`}
-          </span>
-          <div style={{ display: "flex", gap: "8px" }}>
-            <button className="btn-secondary" onClick={onClose}>取消</button>
-            <button
-              className="btn-primary"
-              onClick={handleDeploy}
-              disabled={checked.size === 0 || deploying}
-            >
-              {deploying ? "应用中…" : `应用 ${checked.size} 个`}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────
@@ -1213,11 +1422,38 @@ function shortenPath(p: string): string {
   return p.replace(/^\/Users\/[^/]+/, "~");
 }
 
-// Stable color index for a tag name (hash → 0..5)
+// Stable color index for a tag name (hash → 0..15)
 function tagColorIndex(tag: string): number {
   let hash = 0;
   for (let i = 0; i < tag.length; i++) {
     hash = ((hash << 5) - hash + tag.charCodeAt(i)) | 0;
   }
-  return Math.abs(hash) % 6;
+  return Math.abs(hash) % 16;
+}
+
+// 16-color preset palette: { bg, text } for each index
+const TAG_PALETTE: { bg: string; text: string }[] = [
+  { bg: "#DBEAFE", text: "#1E40AF" },   // 0 天蓝
+  { bg: "#D1FAE5", text: "#065F46" },   // 1 薄荷
+  { bg: "#FEF3C7", text: "#92400E" },   // 2 琥珀
+  { bg: "#FEE2E2", text: "#991B1B" },   // 3 珊瑚
+  { bg: "#F3E8FF", text: "#6B21A8" },   // 4 紫藤
+  { bg: "#CFFAFE", text: "#155E75" },   // 5 青碧
+  { bg: "#FFEDD5", text: "#9A3412" },   // 6 蜜橘
+  { bg: "#FCE7F3", text: "#9D174D" },   // 7 樱粉
+  { bg: "#E0E7FF", text: "#3730A3" },   // 8 靛蓝
+  { bg: "#ECFCCB", text: "#3F6212" },   // 9 青柠
+  { bg: "#FEF9C3", text: "#854D0E" },   // 10 奶黄
+  { bg: "#CCFBF1", text: "#115E59" },   // 11 翡翠
+  { bg: "#F5F3FF", text: "#5B21B6" },   // 12 薰衣草
+  { bg: "#FFF1F2", text: "#9F1239" },   // 13 玫瑰
+  { bg: "#F3F4F6", text: "#374151" },   // 14 银灰
+  { bg: "#E5E7EB", text: "#1F2937" },   // 15 石墨
+];
+
+// Resolve tag color: use stored color_index if available, otherwise hash fallback
+function resolveTagColor(tag: string, colorMap: Map<string, number>): number {
+  const stored = colorMap.get(tag);
+  if (stored !== undefined && stored >= 0) return stored % 16;
+  return tagColorIndex(tag);
 }
