@@ -105,12 +105,12 @@ body {
 
 /* ===== Toolbar ===== */
 .toolbar {
-  padding: 20px var(--space-xl) var(--space-lg);
+  padding: 20px var(--space-xl);
   -webkit-app-region: drag;
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   flex-shrink: 0;
   position: relative;
   z-index: 10;
@@ -256,7 +256,7 @@ body {
 /* Filter chips */
 .filter-row {
   display: flex;
-  gap: 5px;
+  gap: 6px;
   flex-wrap: wrap;
   -webkit-app-region: no-drag;
   align-items: center;
@@ -272,9 +272,9 @@ body {
 }
 
 .filter-chip {
-  padding: 4px 10px;
+  padding: 5px 12px;
   border-radius: 9999px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   background: #F7F6F3;
   color: var(--text-secondary);
@@ -297,7 +297,7 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  margin-right: 2px;
+  margin-right: 3px;
 }
 
 /* Manage tags pencil icon */
@@ -1914,4 +1914,3 @@ body {
 .context-menu-input input:focus {
   border-color: #CCC;
 }
-
