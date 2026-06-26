@@ -30,6 +30,22 @@ import type {
   TagInfo,
 } from "./types";
 
+type ToastMessage = {
+  id: number;
+  tone: "success" | "error";
+  title: string;
+  message: string;
+};
+
+type ConfirmRequest = {
+  title: string;
+  body: string;
+  details?: string[];
+  confirmLabel: string;
+  tone?: "default" | "danger";
+  onConfirm: () => Promise<void>;
+};
+
 // ────────────────────────────────────────
 // App Shell
 // ────────────────────────────────────────
@@ -79,6 +95,25 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
   const [tagManageOpen, setTagManageOpen] = useState(false);
   const [tagsInfo, setTagsInfo] = useState<TagInfo[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+
+  const showToast = useCallback((message: Omit<ToastMessage, "id">) => {
+    const id = Date.now();
+    setToast({ ...message, id });
+    window.setTimeout(() => {
+      setToast(current => current?.id === id ? null : current);
+    }, 4200);
+  }, []);
+
+  const showError = useCallback((title: string, error: unknown, fallback: string) => {
+    const message = error instanceof Error ? error.message : String(error || fallback);
+    showToast({ tone: "error", title, message: message || fallback });
+  }, [showToast]);
+
+  const requestConfirm = useCallback((request: ConfirmRequest) => {
+    setConfirmRequest(request);
+  }, []);
 
   // Load all known tags
   useEffect(() => {
@@ -227,14 +262,37 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
   };
 
   // Target operations (inline on card)
-  const handleDeploy = async (skillId: string) => {
+  const handleDeploy = async (skillId: string, options?: { confirmOverwrite?: boolean }) => {
     if (!activeTarget) return;
-    try {
-      await deploySkill(skillId, [{ targetId: activeTarget.id }], true);
-      await refresh();
-    } catch (e: any) {
-      alert(e?.message || e);
+    const skill = state.skills.find(s => s.id === skillId);
+    const run = async () => {
+      try {
+        await deploySkill(skillId, [{ targetId: activeTarget.id }], true);
+        await refresh();
+        showToast({
+          tone: "success",
+          title: options?.confirmOverwrite ? "已覆盖目标技能" : "已应用技能",
+          message: skill ? `「${skill.displayName}」已应用到「${activeTarget.name}」。` : `已应用到「${activeTarget.name}」。`,
+        });
+      } catch (e) {
+        showError("应用失败", e, "请确认目标目录存在并且当前账户有写入权限。");
+      }
+    };
+    if (options?.confirmOverwrite && skill) {
+      requestConfirm({
+        title: `覆盖「${skill.displayName}」？`,
+        body: "目标位置已有异常或冲突项。覆盖会用主库中的技能重新写入目标目录。",
+        details: [
+          `目标：${activeTarget.name}`,
+          `最终路径：${targetSkillPath(activeTarget, skill)}`,
+        ],
+        confirmLabel: "覆盖技能",
+        tone: "danger",
+        onConfirm: run,
+      });
+      return;
     }
+    await run();
   };
 
   const handleWithdraw = async (skillId: string) => {
@@ -242,8 +300,14 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
     try {
       await withdrawSkill(skillId, [{ targetId: activeTarget.id }]);
       await refresh();
-    } catch (e: any) {
-      alert(e?.message || e);
+      const skill = state.skills.find(s => s.id === skillId);
+      showToast({
+        tone: "success",
+        title: "已收回技能",
+        message: skill ? `「${skill.displayName}」已从「${activeTarget.name}」收回。` : `已从「${activeTarget.name}」收回。`,
+      });
+    } catch (e) {
+      showError("收回失败", e, "请确认目标中的技能是指向主库的软链接。");
     }
   };
 
@@ -255,10 +319,33 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
       const st = skillStatusMap.get(s.id);
       return !st || st.status === "notApplied";
     });
-    for (const skill of toDeploy) {
-      await deploySkill(skill.id, [target], true);
-    }
-    await refresh();
+    if (toDeploy.length === 0) return;
+    requestConfirm({
+      title: "应用当前筛选结果？",
+      body: "这个操作只会应用当前筛选结果中尚未应用的技能，不会处理被筛选隐藏的技能。",
+      details: [
+        `目标：${activeTarget.name}`,
+        `范围：当前筛选结果 ${filtered.length} 个技能`,
+        `将应用：${toDeploy.length} 个未应用技能`,
+        `目标目录：${targetSkillsPath(activeTarget)}`,
+      ],
+      confirmLabel: `应用 ${toDeploy.length} 个技能`,
+      onConfirm: async () => {
+        try {
+          for (const skill of toDeploy) {
+            await deploySkill(skill.id, [target], true);
+          }
+          await refresh();
+          showToast({
+            tone: "success",
+            title: "批量应用完成",
+            message: `已向「${activeTarget.name}」应用 ${toDeploy.length} 个技能。`,
+          });
+        } catch (e) {
+          showError("批量应用失败", e, "部分技能可能未应用，请刷新后按状态筛选复查。");
+        }
+      },
+    });
   };
 
   const handleBatchWithdraw = async () => {
@@ -268,10 +355,34 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
       const st = skillStatusMap.get(s.id);
       return st?.status === "applied";
     });
-    for (const skill of toWithdraw) {
-      await withdrawSkill(skill.id, [target]);
-    }
-    await refresh();
+    if (toWithdraw.length === 0) return;
+    requestConfirm({
+      title: "收回当前筛选结果？",
+      body: "这个操作只会收回当前筛选结果中已应用的技能，不会处理被筛选隐藏的技能，也不会删除主库技能。",
+      details: [
+        `目标：${activeTarget.name}`,
+        `范围：当前筛选结果 ${filtered.length} 个技能`,
+        `将收回：${toWithdraw.length} 个已应用技能`,
+        `目标目录：${targetSkillsPath(activeTarget)}`,
+      ],
+      confirmLabel: `收回 ${toWithdraw.length} 个技能`,
+      tone: "danger",
+      onConfirm: async () => {
+        try {
+          for (const skill of toWithdraw) {
+            await withdrawSkill(skill.id, [target]);
+          }
+          await refresh();
+          showToast({
+            tone: "success",
+            title: "批量收回完成",
+            message: `已从「${activeTarget.name}」收回 ${toWithdraw.length} 个技能。`,
+          });
+        } catch (e) {
+          showError("批量收回失败", e, "部分技能可能仍在目标目录中，请刷新后按状态筛选复查。");
+        }
+      },
+    });
   };
 
   // Reset problem filter when target deselected
@@ -457,6 +568,8 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
       {/* Content: grid */}
       <SkillGrid
         skills={filtered}
+        allSkillsCount={state.skills.length}
+        hasFilters={!!search || !!activeTag || !!statusFilter}
         skillStatusMap={skillStatusMap}
         hasActiveTarget={!!activeTargetId}
         tagColorMap={tagColorMap}
@@ -470,7 +583,7 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
       {activeTargetId && batchStats && (batchStats.notApplied > 0 || batchStats.applied > 0) && (
         <div className="sticky-action-bar">
           <span className="sticky-action-label">
-            当前 {batchStats.total} 个技能
+            当前筛选结果 {batchStats.total} 个技能
             {batchStats.notApplied > 0 && <>：{batchStats.notApplied} 个未应用</>}
             {batchStats.notApplied > 0 && batchStats.applied > 0 && " · "}
             {batchStats.applied > 0 && <>{batchStats.applied} 个已应用</>}
@@ -497,6 +610,9 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
           state={state}
           knownTags={knownTags}
           tagColorMap={tagColorMap}
+          requestConfirm={requestConfirm}
+          showToast={showToast}
+          showError={showError}
           onClose={handleClose}
           refresh={refresh}
         />
@@ -530,6 +646,13 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
           onClose={() => setShowSettings(false)}
         />
       )}
+      {confirmRequest && (
+        <ConfirmDialog
+          request={confirmRequest}
+          onClose={() => setConfirmRequest(null)}
+        />
+      )}
+      {toast && <Toast message={toast} onClose={() => setToast(null)} />}
     </>
   );
 }
@@ -538,6 +661,8 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
 
 function SkillGrid({
   skills,
+  allSkillsCount,
+  hasFilters,
   skillStatusMap,
   hasActiveTarget,
   tagColorMap,
@@ -547,16 +672,31 @@ function SkillGrid({
   onWithdraw,
 }: {
   skills: Skill[];
+  allSkillsCount: number;
+  hasFilters: boolean;
   skillStatusMap: Map<string, TargetSkillStatus> | null;
   hasActiveTarget: boolean;
   tagColorMap: Map<string, number>;
   onSelect: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, skill: Skill) => void;
-  onDeploy: (skillId: string) => void;
+  onDeploy: (skillId: string, options?: { confirmOverwrite?: boolean }) => void;
   onWithdraw: (skillId: string) => void;
 }) {
   if (skills.length === 0) {
-    return <div className="empty-state">暂无技能</div>;
+    return (
+      <div className="empty-state">
+        <div className="empty-state-title">
+          {allSkillsCount === 0 ? "主库还没有技能" : "当前筛选没有匹配的技能"}
+        </div>
+        <div className="empty-state-text">
+          {allSkillsCount === 0
+            ? "点击右上角加号导入包含 SKILL.md 的文件夹，或导入 .zip 技能包。"
+            : hasFilters
+              ? "清除搜索、标签或状态筛选后再查看；也可以切换顶部目标确认应用状态。"
+              : "当前目标下暂时没有可展示的技能。"}
+        </div>
+      </div>
+    );
   }
   return (
     <div className="skill-grid">
@@ -566,7 +706,7 @@ function SkillGrid({
           <div
             key={skill.id}
             className={`skill-card ${hasActiveTarget ? "has-target" : ""}`}
-            style={{ animationDelay: `${i * 60}ms` }}
+            style={{ animationDelay: `${Math.min(i, 8) * 50}ms` }}
             onClick={() => onSelect(skill.id)}
             onContextMenu={(e) => onContextMenu(e, skill)}
           >
@@ -619,7 +759,7 @@ function SkillGrid({
                   </button>
                 )}
                 {status.status === "problem" && (
-                  <button className="btn btn-sm btn-primary" onClick={() => onDeploy(skill.id)}>
+                  <button className="btn btn-sm btn-primary" onClick={() => onDeploy(skill.id, { confirmOverwrite: true })}>
                     覆盖
                   </button>
                 )}
@@ -639,6 +779,9 @@ function SkillDrawer({
   state,
   knownTags,
   tagColorMap,
+  requestConfirm,
+  showToast,
+  showError,
   onClose,
   refresh,
 }: {
@@ -646,6 +789,9 @@ function SkillDrawer({
   state: AppState;
   knownTags: string[];
   tagColorMap: Map<string, number>;
+  requestConfirm: (request: ConfirmRequest) => void;
+  showToast: (message: Omit<ToastMessage, "id">) => void;
+  showError: (title: string, error: unknown, fallback: string) => void;
   onClose: () => void;
   refresh: () => Promise<void>;
 }) {
@@ -697,21 +843,48 @@ function SkillDrawer({
     await refresh();
   };
 
-  const handleInlineDeploy = async (target: Target) => {
-    try {
-      await deploySkill(skill.id, [{ targetId: target.id }], true);
-      await refresh();
-    } catch (e: any) {
-      alert(e?.message || e);
+  const handleInlineDeploy = async (target: Target, options?: { confirmOverwrite?: boolean }) => {
+    const run = async () => {
+      try {
+        await deploySkill(skill.id, [{ targetId: target.id }], true);
+        await refresh();
+        showToast({
+          tone: "success",
+          title: options?.confirmOverwrite ? "已覆盖目标技能" : "已应用技能",
+          message: `「${skill.displayName}」已应用到「${target.name}」。`,
+        });
+      } catch (e) {
+        showError("应用失败", e, "请确认目标目录存在并且当前账户有写入权限。");
+      }
+    };
+    if (options?.confirmOverwrite) {
+      requestConfirm({
+        title: `覆盖「${skill.displayName}」？`,
+        body: "目标位置已有异常或冲突项。覆盖会用主库中的技能重新写入目标目录。",
+        details: [
+          `目标：${target.name}`,
+          `最终路径：${targetSkillPath(target, skill)}`,
+        ],
+        confirmLabel: "覆盖技能",
+        tone: "danger",
+        onConfirm: run,
+      });
+      return;
     }
+    await run();
   };
 
   const handleInlineWithdraw = async (target: Target) => {
     try {
       await withdrawSkill(skill.id, [{ targetId: target.id }]);
       await refresh();
-    } catch (e: any) {
-      alert(e?.message || e);
+      showToast({
+        tone: "success",
+        title: "已收回技能",
+        message: `「${skill.displayName}」已从「${target.name}」收回。`,
+      });
+    } catch (e) {
+      showError("收回失败", e, "请确认目标中的技能是指向主库的软链接。");
     }
   };
 
@@ -788,10 +961,10 @@ function SkillDrawer({
                 )}
                 {s === "problem" && (
                   <button
-                    className="row-action-btn withdraw"
-                    onClick={() => handleInlineWithdraw(target)}
+                    className="row-action-btn apply"
+                    onClick={() => handleInlineDeploy(target, { confirmOverwrite: true })}
                   >
-                    收回
+                    覆盖
                   </button>
                 )}
               </div>
@@ -980,7 +1153,7 @@ function TagManagementPanel({
     <div className="tag-manage-panel">
       <div className="tag-manage-header">
         <span className="tag-manage-title">标签管理</span>
-        <span className="tag-manage-hint">拖动排序 · 点击颜色修改 · 点击名称重命名</span>
+        <span className="tag-manage-hint">用上下箭头排序 · 点击颜色修改 · 点击名称重命名</span>
       </div>
       <div className="tag-manage-list">
         {tagsInfo.map((t, idx) => {
@@ -1045,7 +1218,7 @@ function TagManagementPanel({
               {confirmDelete === t.name ? (
                 <span className="tag-manage-confirm">
                   <button className="tag-manage-confirm-btn" onClick={() => { onDelete(t.name); setConfirmDelete(null); }}>
-                    确认
+                    删除标签
                   </button>
                   <button className="tag-manage-cancel-btn" onClick={() => setConfirmDelete(null)}>
                     取消
@@ -1064,7 +1237,9 @@ function TagManagementPanel({
           );
         })}
         {tagsInfo.length === 0 && (
-          <div className="tag-manage-empty">暂无标签，在技能详情中添加</div>
+          <div className="tag-manage-empty">
+            还没有标签。打开任意技能卡片，在详情抽屉的标签区域点击「+」创建第一个标签。
+          </div>
         )}
       </div>
     </div>
@@ -1312,6 +1487,81 @@ function ImportModal({
   );
 }
 
+function ConfirmDialog({
+  request,
+  onClose,
+}: {
+  request: ConfirmRequest;
+  onClose: () => void;
+}) {
+  const [working, setWorking] = useState(false);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !working) onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose, working]);
+
+  const handleConfirm = async () => {
+    setWorking(true);
+    try {
+      await request.onConfirm();
+      onClose();
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className="confirm-backdrop" onClick={working ? undefined : onClose}>
+      <section className="confirm-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <div className="confirm-kicker">确认操作</div>
+        <h3 id="confirm-title">{request.title}</h3>
+        <p>{request.body}</p>
+        {request.details && request.details.length > 0 && (
+          <div className="confirm-details">
+            {request.details.map(detail => (
+              <div key={detail} className="confirm-detail-row">{detail}</div>
+            ))}
+          </div>
+        )}
+        <div className="confirm-actions">
+          <button className="btn btn-secondary" onClick={onClose} disabled={working}>
+            先不操作
+          </button>
+          <button
+            className={`btn ${request.tone === "danger" ? "btn-danger" : "btn-primary"}`}
+            onClick={handleConfirm}
+            disabled={working}
+          >
+            {working ? "处理中…" : request.confirmLabel}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function Toast({
+  message,
+  onClose,
+}: {
+  message: ToastMessage;
+  onClose: () => void;
+}) {
+  return (
+    <div className={`toast toast-${message.tone}`} role="status" aria-live="polite">
+      <div>
+        <div className="toast-title">{message.title}</div>
+        <div className="toast-message">{message.message}</div>
+      </div>
+      <button className="toast-close" onClick={onClose} aria-label="关闭提示">×</button>
+    </div>
+  );
+}
+
 // ────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────
@@ -1326,6 +1576,15 @@ function statusLabel(s: SkillStatusV2): string {
   if (s === "applied") return "已应用";
   if (s === "problem") return "有问题";
   return "未应用";
+}
+
+function targetSkillsPath(target: Target): string {
+  if (target.isDefault || target.path.endsWith("/skills")) return target.path;
+  return `${target.path}/.agents/skills`;
+}
+
+function targetSkillPath(target: Target, skill: Skill): string {
+  return `${targetSkillsPath(target)}/${skill.name}`;
 }
 
 function shortenPath(p: string): string {
