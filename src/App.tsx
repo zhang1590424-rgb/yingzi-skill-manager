@@ -58,6 +58,7 @@ export default function App() {
     const s = await getAppState();
     setState(s);
     setLoading(false);
+    return s;
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -69,7 +70,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <div className="main-content">
-        <SkillView state={state} refresh={refresh} />
+        <SkillView state={state} refresh={refresh} setAppState={setState} />
       </div>
     </div>
   );
@@ -79,11 +80,28 @@ export default function App() {
 // Skill View (unified: browsing + target operations)
 // ────────────────────────────────────────
 
-function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise<void> }) {
+type ImportDoneResult = {
+  state: AppState;
+  changed: number;
+  skipped: number;
+  errors: string[];
+};
+
+function SkillView({
+  state,
+  refresh,
+  setAppState,
+}: {
+  state: AppState;
+  refresh: () => Promise<AppState>;
+  setAppState: (state: AppState) => void;
+}) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
+  const [highlightedSkillId, setHighlightedSkillId] = useState<string | null>(null);
+  const [exitingSkillId, setExitingSkillId] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; skill: Skill } | null>(null);
   const [knownTags, setKnownTags] = useState<string[]>([]);
@@ -263,6 +281,77 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
   );
 
   const handleClose = () => setSelectedId(null);
+
+  useEffect(() => {
+    if (!highlightedSkillId) return;
+    const frame = window.requestAnimationFrame(() => {
+      const card = document.querySelector<HTMLElement>(`[data-skill-id="${highlightedSkillId}"]`);
+      card?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    const timer = window.setTimeout(() => setHighlightedSkillId(null), 2200);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [highlightedSkillId, filtered]);
+
+  const handleImportDone = (result: ImportDoneResult) => {
+    const previousIds = new Set(state.skills.map(skill => skill.id));
+    const importedSkills = result.state.skills.filter(skill => !previousIds.has(skill.id));
+    const focusSkill = importedSkills[0] ?? null;
+
+    setAppState(result.state);
+    setShowImport(false);
+    setActiveTargetId(null);
+    setSearch("");
+    setActiveTag(null);
+    setStatusFilter(null);
+    setTargetDropdownOpen(false);
+    setStatusDropdownOpen(false);
+    setTagManageOpen(false);
+
+    if (focusSkill) {
+      setSelectedId(focusSkill.id);
+      setHighlightedSkillId(focusSkill.id);
+    }
+
+    if (result.changed > 1) {
+      showToast({
+        tone: "success",
+        title: `已导入 ${result.changed} 个技能`,
+        message: focusSkill
+          ? `已进入主库，尚未应用到目标。已定位到「${focusSkill.displayName}」。`
+          : "已进入主库，尚未应用到目标。",
+      });
+      return;
+    }
+
+    if (focusSkill) {
+      showToast({
+        tone: "success",
+        title: `已导入「${focusSkill.displayName}」`,
+        message: "已进入主库，尚未应用到目标。已为你定位到新技能。",
+      });
+      return;
+    }
+
+    showToast({
+      tone: "success",
+      title: result.changed > 0 ? "导入完成" : "没有新增技能",
+      message: result.changed > 0
+        ? "已刷新主库。"
+        : "所选内容没有产生新的主库技能。",
+    });
+  };
+
+  const handleSkillDeleted = (skill: Skill, nextState: AppState) => {
+    setSelectedId(null);
+    setExitingSkillId(skill.id);
+    window.setTimeout(() => {
+      setAppState(nextState);
+      setExitingSkillId(null);
+    }, 220);
+  };
 
   const handleContextMenu = (e: React.MouseEvent, skill: Skill) => {
     e.preventDefault();
@@ -607,6 +696,8 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
         hasFilters={!!search || !!activeTag || !!statusFilter}
         skillStatusMap={skillStatusMap}
         hasActiveTarget={!!activeTargetId}
+        highlightedSkillId={highlightedSkillId}
+        exitingSkillId={exitingSkillId}
         tagColorMap={tagColorMap}
         onSelect={setSelectedId}
         onContextMenu={handleContextMenu}
@@ -649,6 +740,7 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
           showToast={showToast}
           showError={showError}
           onClose={handleClose}
+          onDeleted={handleSkillDeleted}
           refresh={refresh}
         />
       )}
@@ -670,7 +762,7 @@ function SkillView({ state, refresh }: { state: AppState; refresh: () => Promise
       {showImport && (
         <ImportModal
           onClose={() => setShowImport(false)}
-          onDone={async () => { await refresh(); setShowImport(false); }}
+          onDone={handleImportDone}
         />
       )}
       {/* Settings Drawer */}
@@ -700,6 +792,8 @@ function SkillGrid({
   hasFilters,
   skillStatusMap,
   hasActiveTarget,
+  highlightedSkillId,
+  exitingSkillId,
   tagColorMap,
   onSelect,
   onContextMenu,
@@ -711,6 +805,8 @@ function SkillGrid({
   hasFilters: boolean;
   skillStatusMap: Map<string, TargetSkillStatus> | null;
   hasActiveTarget: boolean;
+  highlightedSkillId: string | null;
+  exitingSkillId: string | null;
   tagColorMap: Map<string, number>;
   onSelect: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, skill: Skill) => void;
@@ -725,7 +821,7 @@ function SkillGrid({
         </div>
         <div className="empty-state-text">
           {allSkillsCount === 0
-            ? "点击右上角加号导入包含 SKILL.md 的文件夹，或导入 .zip 技能包。"
+            ? "点击右上角加号导入包含 SKILL.md 的技能文件夹。"
             : hasFilters
               ? "清除搜索、标签或状态筛选后再查看；也可以切换顶部目标确认应用状态。"
               : "当前目标下暂时没有可展示的技能。"}
@@ -740,9 +836,15 @@ function SkillGrid({
         return (
           <div
             key={skill.id}
-            className={`skill-card ${hasActiveTarget ? "has-target" : ""}`}
+            data-skill-id={skill.id}
+            className={[
+              "skill-card",
+              hasActiveTarget ? "has-target" : "",
+              highlightedSkillId === skill.id ? "highlighted" : "",
+              exitingSkillId === skill.id ? "exiting" : "",
+            ].filter(Boolean).join(" ")}
             style={{ animationDelay: `${Math.min(i, 8) * 50}ms` }}
-            onClick={() => onSelect(skill.id)}
+            onClick={() => exitingSkillId === skill.id ? undefined : onSelect(skill.id)}
             onContextMenu={(e) => onContextMenu(e, skill)}
           >
             {/* Header: title + status position (always reserved) */}
@@ -818,6 +920,7 @@ function SkillDrawer({
   showToast,
   showError,
   onClose,
+  onDeleted,
   refresh,
 }: {
   skill: Skill;
@@ -828,7 +931,8 @@ function SkillDrawer({
   showToast: (message: Omit<ToastMessage, "id">) => void;
   showError: (title: string, error: unknown, fallback: string) => void;
   onClose: () => void;
-  refresh: () => Promise<void>;
+  onDeleted: (skill: Skill, nextState: AppState) => void;
+  refresh: () => Promise<AppState>;
 }) {
   const [deleting, setDeleting] = useState(false);
   const [showContent, setShowContent] = useState(false);
@@ -868,9 +972,19 @@ function SkillDrawer({
   const handleDelete = async () => {
     if (!confirm(`确定要删除技能「${skill.displayName}」吗？此操作不可撤销。`)) return;
     setDeleting(true);
-    await deleteSkill(skill.id);
-    onClose();
-    window.location.reload();
+    try {
+      const nextState = await deleteSkill(skill.id);
+      showToast({
+        tone: "success",
+        title: "已删除技能",
+        message: `「${skill.displayName}」已从主库删除。`,
+      });
+      setClosing(true);
+      window.setTimeout(() => onDeleted(skill, nextState), 250);
+    } catch (e) {
+      setDeleting(false);
+      showError("删除失败", e, "该技能可能仍有启用位置，请先收回后再删除。");
+    }
   };
 
   const handleTagsChange = async (newTags: string[]) => {
@@ -1350,7 +1464,7 @@ function SkillContextMenu({
 // Settings Drawer
 // ────────────────────────────────────────
 
-function SettingsDrawer({ state, refresh, onClose }: { state: AppState; refresh: () => Promise<void>; onClose: () => void }) {
+function SettingsDrawer({ state, refresh, onClose }: { state: AppState; refresh: () => Promise<AppState>; onClose: () => void }) {
   const handleAddTarget = async () => {
     const selected = await open({ directory: true, title: "选择目标目录" });
     if (!selected) return;
@@ -1432,7 +1546,7 @@ function ImportModal({
   onDone,
 }: {
   onClose: () => void;
-  onDone: () => void;
+  onDone: (result: ImportDoneResult) => void;
 }) {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1452,13 +1566,20 @@ function ImportModal({
       if (path.endsWith(".zip")) {
         const scan = await scanSkillPackage(path) as { skills?: Array<{ id: string }> };
         const ids = (scan.skills ?? []).map((s: { id: string }) => s.id);
+        let result: Awaited<ReturnType<typeof importSkillsFromPackage>> = {
+          state: await getAppState(),
+          changed: 0,
+          skipped: 0,
+          errors: [],
+        };
         if (ids.length > 0) {
-          await importSkillsFromPackage(path, ids);
+          result = await importSkillsFromPackage(path, ids);
         }
+        onDone(result);
       } else {
-        await importSkill(path);
+        const nextState = await importSkill(path);
+        onDone({ state: nextState, changed: 1, skipped: 0, errors: [] });
       }
-      onDone();
     } catch (e) {
       setError(`导入失败：${e}`);
     } finally {

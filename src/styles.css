@@ -746,6 +746,27 @@ body {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
+.skill-card.highlighted {
+  background: #FFFBF0;
+  border-color: #E5D59C;
+}
+
+.skill-card.highlighted::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--accent-yellow-bg);
+  opacity: 0;
+  pointer-events: none;
+  animation: skillHighlightWash 1600ms var(--ease-out-expo) both;
+}
+
+.skill-card.exiting {
+  pointer-events: none;
+  animation: skillCardExit 220ms ease-out both;
+}
+
 .skill-card:active {
   transform: scale(0.99);
 }
@@ -862,6 +883,17 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+@keyframes skillHighlightWash {
+  0% { opacity: 0; transform: scale(0.98); }
+  24% { opacity: 0.62; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
+}
+
+@keyframes skillCardExit {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(6px) scale(0.98); }
 }
 
 /* ===== Sticky Action Bar ===== */
