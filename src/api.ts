@@ -168,6 +168,16 @@ export async function reorderTag(tag: string, direction: "up" | "down"): Promise
   return invoke<import("./types").TagInfo[]>("reorder_tag", { tag, direction });
 }
 
+export async function reorderTags(tags: string[]): Promise<import("./types").TagInfo[]> {
+  if (!isTauriRuntime()) return getAllTagsInfo();
+  return invoke<import("./types").TagInfo[]>("reorder_tags", { tags });
+}
+
+export async function createTag(tag: string): Promise<import("./types").TagInfo[]> {
+  if (!isTauriRuntime()) return getAllTagsInfo();
+  return invoke<import("./types").TagInfo[]>("create_tag", { tag });
+}
+
 export async function openPath(path: string): Promise<void> {
   if (!isTauriRuntime()) return;
   return invoke<void>("open_path", { path });

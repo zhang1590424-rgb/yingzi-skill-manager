@@ -604,11 +604,16 @@ impl Store {
     pub fn get_all_tags_info(&self) -> Result<Vec<TagInfo>> {
         let conn = self.connection()?;
         let mut stmt = conn.prepare(
-            "SELECT st.tag, COALESCE(tm.color_index, -1), COUNT(*) as cnt, COALESCE(tm.sort_order, 0) \
-             FROM skill_tags st \
-             LEFT JOIN tag_meta tm ON tm.tag = st.tag \
-             GROUP BY st.tag \
-             ORDER BY COALESCE(tm.sort_order, 0) ASC, st.tag ASC",
+            "SELECT tag, color_index, cnt, sort_order FROM ( \
+               SELECT st.tag AS tag, COALESCE(tm.color_index, -1) AS color_index, COUNT(*) AS cnt, COALESCE(tm.sort_order, 0) AS sort_order \
+               FROM skill_tags st \
+               LEFT JOIN tag_meta tm ON tm.tag = st.tag \
+               GROUP BY st.tag \
+             UNION ALL \
+               SELECT tm2.tag AS tag, tm2.color_index, 0 AS cnt, tm2.sort_order \
+               FROM tag_meta tm2 \
+               WHERE tm2.tag NOT IN (SELECT tag FROM skill_tags) \
+             ) ORDER BY sort_order ASC, tag ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(TagInfo {
@@ -653,6 +658,20 @@ impl Store {
         Ok(())
     }
 
+    pub fn create_tag(&self, tag: &str) -> Result<()> {
+        let conn = self.connection()?;
+        // Determine next sort_order
+        let max_order: i32 = conn
+            .prepare("SELECT COALESCE(MAX(sort_order), -1) FROM tag_meta")?
+            .query_row([], |row| row.get(0))
+            .unwrap_or(-1);
+        conn.execute(
+            "INSERT OR IGNORE INTO tag_meta (tag, color_index, sort_order) VALUES (?1, -1, ?2)",
+            params![tag, max_order + 1],
+        )?;
+        Ok(())
+    }
+
     pub fn reorder_tag(&self, tag: &str, direction: &str) -> Result<()> {
         let conn = self.connection()?;
         conn.execute(
@@ -693,6 +712,18 @@ impl Store {
             conn.execute(
                 "UPDATE tag_meta SET sort_order = ?1 WHERE tag = ?2",
                 params![current_order, other],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn reorder_tags(&self, tags: &[String]) -> Result<()> {
+        let conn = self.connection()?;
+        for (i, tag) in tags.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO tag_meta (tag, color_index, sort_order) VALUES (?1, -1, ?2) \
+                 ON CONFLICT(tag) DO UPDATE SET sort_order = ?2",
+                params![tag, i as i32],
             )?;
         }
         Ok(())

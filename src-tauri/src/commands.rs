@@ -808,10 +808,28 @@ pub fn delete_tag(tag: String) -> Result<AppState, String> {
 }
 
 #[tauri::command]
+pub fn create_tag(tag: String) -> Result<Vec<crate::models::TagInfo>, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.create_tag(&tag)?;
+        store.get_all_tags_info()
+    })
+}
+
+#[tauri::command]
 pub fn reorder_tag(tag: String, direction: String) -> Result<Vec<crate::models::TagInfo>, String> {
     run(|| {
         let store = Store::new()?;
         store.reorder_tag(&tag, &direction)?;
+        store.get_all_tags_info()
+    })
+}
+
+#[tauri::command]
+pub fn reorder_tags(tags: Vec<String>) -> Result<Vec<crate::models::TagInfo>, String> {
+    run(|| {
+        let store = Store::new()?;
+        store.reorder_tags(&tags)?;
         store.get_all_tags_info()
     })
 }

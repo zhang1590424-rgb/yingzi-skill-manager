@@ -20,6 +20,8 @@ import {
   setTagColor,
   deleteTag,
   reorderTag,
+  reorderTags,
+  createTag,
 } from "./api";
 import type {
   AppState,
@@ -33,8 +35,7 @@ import type {
 type ToastMessage = {
   id: number;
   tone: "success" | "error";
-  title: string;
-  message: string;
+  text: string;
 };
 
 type ConfirmRequest = {
@@ -110,24 +111,48 @@ function SkillView({
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
   const statusDropdownRef = useRef<HTMLDivElement>(null);
   const targetDropdownRef = useRef<HTMLDivElement>(null);
-  const [tagManageOpen, setTagManageOpen] = useState(false);
   const [tagsInfo, setTagsInfo] = useState<TagInfo[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [toastExiting, setToastExiting] = useState(false);
+  const toastTimerRef = useRef<number | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
-  const showToast = useCallback((message: Omit<ToastMessage, "id">) => {
-    const id = Date.now();
-    setToast({ ...message, id });
+  const dismissToast = useCallback(() => {
+    setToastExiting(true);
     window.setTimeout(() => {
-      setToast(current => current?.id === id ? null : current);
-    }, 4200);
+      setToast(null);
+      setToastExiting(false);
+    }, 120);
   }, []);
+
+  const showToast = useCallback((msg: Omit<ToastMessage, "id">) => {
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    setToastExiting(false);
+    const id = Date.now();
+    setToast({ ...msg, id });
+    const duration = msg.tone === "error" ? 3500 : 1800;
+    toastTimerRef.current = window.setTimeout(dismissToast, duration);
+  }, [dismissToast]);
 
   const showError = useCallback((title: string, error: unknown, fallback: string) => {
     const message = error instanceof Error ? error.message : String(error || fallback);
-    showToast({ tone: "error", title, message: message || fallback });
+    showToast({ tone: "error", text: message || fallback });
   }, [showToast]);
+
+  const pauseToast = useCallback(() => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+  }, []);
+
+  const resumeToast = useCallback(() => {
+    if (toast && !toastExiting) {
+      const duration = toast.tone === "error" ? 3500 : 1800;
+      toastTimerRef.current = window.setTimeout(dismissToast, duration);
+    }
+  }, [toast, toastExiting, dismissToast]);
 
   const requestConfirm = useCallback((request: ConfirmRequest) => {
     setConfirmRequest(request);
@@ -241,26 +266,8 @@ function SkillView({
     } else if (activeTag) {
       list = list.filter(s => s.tags.includes(activeTag));
     }
-    // Status filter
-    if (statusFilter) {
-      if (skillStatusMap) {
-        // Target view: filter by target-specific status
-        list = list.filter(s => {
-          const st = skillStatusMap.get(s.id);
-          return st?.status === statusFilter;
-        });
-      } else {
-        // All skills view: filter by aggregate status
-        list = list.filter(s => {
-          if (statusFilter === "applied") return s.enabledCount > 0;
-          if (statusFilter === "notApplied") return s.enabledCount === 0 && s.issueCount === 0;
-          if (statusFilter === "problem") return s.issueCount > 0;
-          return true;
-        });
-      }
-    }
     return list;
-  }, [state.skills, search, activeTag, statusFilter, skillStatusMap]);
+  }, [state.skills, search, activeTag]);
 
   // Batch stats: count applied/notApplied in current filtered results
   const batchStats = useMemo(() => {
@@ -308,7 +315,6 @@ function SkillView({
     setStatusFilter(null);
     setTargetDropdownOpen(false);
     setStatusDropdownOpen(false);
-    setTagManageOpen(false);
 
     if (focusSkill) {
       setSelectedId(focusSkill.id);
@@ -316,32 +322,16 @@ function SkillView({
     }
 
     if (result.changed > 1) {
-      showToast({
-        tone: "success",
-        title: `已导入 ${result.changed} 个技能`,
-        message: focusSkill
-          ? `已进入主库，尚未应用到目标。已定位到「${focusSkill.displayName}」。`
-          : "已进入主库，尚未应用到目标。",
-      });
+      showToast({ tone: "success", text: `已导入 ${result.changed} 个技能` });
       return;
     }
 
     if (focusSkill) {
-      showToast({
-        tone: "success",
-        title: `已导入「${focusSkill.displayName}」`,
-        message: "已进入主库，尚未应用到目标。已为你定位到新技能。",
-      });
+      showToast({ tone: "success", text: `已导入「${focusSkill.displayName}」` });
       return;
     }
 
-    showToast({
-      tone: "success",
-      title: result.changed > 0 ? "导入完成" : "没有新增技能",
-      message: result.changed > 0
-        ? "已刷新主库。"
-        : "所选内容没有产生新的主库技能。",
-    });
+    showToast({ tone: "success", text: result.changed > 0 ? "导入完成" : "没有新增技能" });
   };
 
   const handleSkillDeleted = (skill: Skill, nextState: AppState) => {
@@ -385,8 +375,7 @@ function SkillView({
         await refresh();
         showToast({
           tone: "success",
-          title: options?.confirmOverwrite ? "已覆盖目标技能" : "已应用技能",
-          message: skill ? `「${skill.displayName}」已应用到「${activeTarget.name}」。` : `已应用到「${activeTarget.name}」。`,
+          text: options?.confirmOverwrite ? "已覆盖" : "已应用" + (skill ? `「${skill.displayName}」` : ""),
         });
       } catch (e) {
         showError("应用失败", e, "请确认目标目录存在并且当前账户有写入权限。");
@@ -417,8 +406,7 @@ function SkillView({
       const skill = state.skills.find(s => s.id === skillId);
       showToast({
         tone: "success",
-        title: "已收回技能",
-        message: skill ? `「${skill.displayName}」已从「${activeTarget.name}」收回。` : `已从「${activeTarget.name}」收回。`,
+        text: skill ? `已收回「${skill.displayName}」` : "已收回技能",
       });
     } catch (e) {
       showError("收回失败", e, "请确认目标中的技能是指向主库的软链接。");
@@ -452,8 +440,7 @@ function SkillView({
           await refresh();
           showToast({
             tone: "success",
-            title: "批量应用完成",
-            message: `已向「${activeTarget.name}」应用 ${toDeploy.length} 个技能。`,
+            text: `已应用 ${toDeploy.length} 个技能`,
           });
         } catch (e) {
           showError("批量应用失败", e, "部分技能可能未应用，请刷新后按状态筛选复查。");
@@ -489,8 +476,7 @@ function SkillView({
           await refresh();
           showToast({
             tone: "success",
-            title: "批量收回完成",
-            message: `已从「${activeTarget.name}」收回 ${toWithdraw.length} 个技能。`,
+            text: `已收回 ${toWithdraw.length} 个技能`,
           });
         } catch (e) {
           showError("批量收回失败", e, "部分技能可能仍在目标目录中，请刷新后按状态筛选复查。");
@@ -564,7 +550,7 @@ function SkillView({
         </div>
 
         {/* Row 2: Tag filter + Status dropdown */}
-        {(allTags.length > 0 || activeTargetId || globalStatusCounts) && (
+        {allTags.length > 0 && (
           <div className="filter-row">
             {allTags.length > 0 && (
               <>
@@ -590,102 +576,9 @@ function SkillView({
                 >
                   无标签
                 </button>
-                <button
-                  className={`manage-tags-pencil ${tagManageOpen ? "active" : ""}`}
-                  onClick={() => setTagManageOpen(!tagManageOpen)}
-                  title="管理标签"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-                    <path d="m15 5 4 4" />
-                  </svg>
-                </button>
               </>
             )}
-            {(() => {
-              const counts = statusCounts || globalStatusCounts;
-              if (!counts) return null;
-              return (
-              <div className="status-dropdown" ref={statusDropdownRef}>
-                <button
-                  className={`status-dropdown-trigger ${statusFilter ? "active" : ""}`}
-                  onClick={() => setStatusDropdownOpen(!statusDropdownOpen)}
-                >
-                  <span className="status-dropdown-label">
-                    {statusFilter === "applied" ? `已应用 · ${counts.applied}` :
-                     statusFilter === "notApplied" ? `未应用 · ${counts.notApplied}` :
-                     statusFilter === "problem" ? `有问题 · ${counts.problem}` :
-                     `全部状态 · ${counts.total}`}
-                  </span>
-                  <span className="status-dropdown-chevron">{statusDropdownOpen ? "▴" : "▾"}</span>
-                </button>
-                {statusDropdownOpen && (
-                  <div className="status-dropdown-menu">
-                    <div
-                      className={`status-dropdown-item ${!statusFilter ? "active" : ""}`}
-                      onClick={() => { setStatusFilter(null); setStatusDropdownOpen(false); }}
-                    >
-                      全部状态 · {counts.total}
-                    </div>
-                    <div
-                      className={`status-dropdown-item ${statusFilter === "applied" ? "active" : ""}`}
-                      onClick={() => { setStatusFilter("applied"); setStatusDropdownOpen(false); }}
-                    >
-                      <span className="status-dot applied" />
-                      已应用 · {counts.applied}
-                    </div>
-                    <div
-                      className={`status-dropdown-item ${statusFilter === "notApplied" ? "active" : ""}`}
-                      onClick={() => { setStatusFilter("notApplied"); setStatusDropdownOpen(false); }}
-                    >
-                      <span className="status-dot not-applied" />
-                      未应用 · {counts.notApplied}
-                    </div>
-                    {counts.problem > 0 && (
-                      <div
-                        className={`status-dropdown-item ${statusFilter === "problem" ? "active" : ""}`}
-                        onClick={() => { setStatusFilter("problem"); setStatusDropdownOpen(false); }}
-                      >
-                        <span className="status-dot problem" />
-                        有问题 · {counts.problem}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              );
-            })()}
           </div>
-        )}
-
-        {/* Tag Management Panel (inline) */}
-        {tagManageOpen && (
-          <TagManagementPanel
-            tagsInfo={tagsInfo}
-            tagColorMap={tagColorMap}
-            onColorChange={async (tag, colorIndex) => {
-              const updated = await setTagColor(tag, colorIndex);
-              setTagsInfo(updated);
-            }}
-            onRename={async (oldName, newName) => {
-              await renameTag(oldName, newName);
-              await refresh();
-              const updated = await getAllTagsInfo();
-              setTagsInfo(updated);
-              if (activeTag === oldName) setActiveTag(newName);
-            }}
-            onDelete={async (tag) => {
-              await deleteTag(tag);
-              await refresh();
-              const updated = await getAllTagsInfo();
-              setTagsInfo(updated);
-              if (activeTag === tag) setActiveTag(null);
-            }}
-            onMove={async (tag, direction) => {
-              const updated = await reorderTag(tag, direction);
-              setTagsInfo(updated);
-            }}
-          />
         )}
       </div>
 
@@ -693,12 +586,13 @@ function SkillView({
       <SkillGrid
         skills={filtered}
         allSkillsCount={state.skills.length}
-        hasFilters={!!search || !!activeTag || !!statusFilter}
+        hasFilters={!!search || !!activeTag}
         skillStatusMap={skillStatusMap}
         hasActiveTarget={!!activeTargetId}
         highlightedSkillId={highlightedSkillId}
         exitingSkillId={exitingSkillId}
         tagColorMap={tagColorMap}
+        allTags={allTags}
         onSelect={setSelectedId}
         onContextMenu={handleContextMenu}
         onDeploy={handleDeploy}
@@ -771,6 +665,11 @@ function SkillView({
           state={state}
           refresh={refresh}
           onClose={() => setShowSettings(false)}
+          tagsInfo={tagsInfo}
+          setTagsInfo={setTagsInfo}
+          tagColorMap={tagColorMap}
+          activeTag={activeTag}
+          setActiveTag={setActiveTag}
         />
       )}
       {confirmRequest && (
@@ -779,7 +678,7 @@ function SkillView({
           onClose={() => setConfirmRequest(null)}
         />
       )}
-      {toast && <Toast message={toast} onClose={() => setToast(null)} />}
+      {toast && <Toast message={toast} exiting={toastExiting} onMouseEnter={pauseToast} onMouseLeave={resumeToast} />}
     </>
   );
 }
@@ -795,6 +694,7 @@ function SkillGrid({
   highlightedSkillId,
   exitingSkillId,
   tagColorMap,
+  allTags,
   onSelect,
   onContextMenu,
   onDeploy,
@@ -808,6 +708,7 @@ function SkillGrid({
   highlightedSkillId: string | null;
   exitingSkillId: string | null;
   tagColorMap: Map<string, number>;
+  allTags: string[];
   onSelect: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, skill: Skill) => void;
   onDeploy: (skillId: string, options?: { confirmOverwrite?: boolean }) => void;
@@ -823,88 +724,168 @@ function SkillGrid({
           {allSkillsCount === 0
             ? "点击右上角加号导入包含 SKILL.md 的技能文件夹。"
             : hasFilters
-              ? "清除搜索、标签或状态筛选后再查看；也可以切换顶部目标确认应用状态。"
-              : "当前目标下暂时没有可展示的技能。"}
+              ? "清除搜索或标签筛选后再查看。"
+              : hasActiveTarget
+                ? "当前目标下暂时没有可展示的技能。"
+                : "没有匹配的技能。"}
         </div>
       </div>
     );
   }
+
+  // Compute groups
+  const groups = useMemo(() => {
+    if (hasActiveTarget) {
+      // Target view: group by status
+      const applied: Skill[] = [];
+      const notApplied: Skill[] = [];
+      for (const skill of skills) {
+        const st = skillStatusMap?.get(skill.id);
+        if (st && (st.status === "applied" || st.status === "problem")) {
+          applied.push(skill);
+        } else {
+          notApplied.push(skill);
+        }
+      }
+      const result: Array<{ key: string; label: string; color: string; skills: Skill[] }> = [];
+      if (applied.length > 0) {
+        result.push({ key: "applied", label: "已应用", color: "#346538", skills: applied });
+      }
+      if (notApplied.length > 0) {
+        result.push({ key: "notApplied", label: "未应用", color: "#A8A5A0", skills: notApplied });
+      }
+      return result;
+    } else {
+      // All Skills view: group by first tag (based on tag sort order)
+      const tagGroups = new Map<string, Skill[]>();
+      const noTag: Skill[] = [];
+
+      for (const skill of skills) {
+        if (skill.tags.length === 0) {
+          noTag.push(skill);
+        } else {
+          // Find the first tag that's in allTags order
+          let assignedTag: string | null = null;
+          for (const t of allTags) {
+            if (skill.tags.includes(t)) {
+              assignedTag = t;
+              break;
+            }
+          }
+          if (!assignedTag) assignedTag = skill.tags[0];
+
+          if (!tagGroups.has(assignedTag)) {
+            tagGroups.set(assignedTag, []);
+          }
+          tagGroups.get(assignedTag)!.push(skill);
+        }
+      }
+
+      const result: Array<{ key: string; label: string; color: string; skills: Skill[] }> = [];
+      for (const tag of allTags) {
+        const group = tagGroups.get(tag);
+        if (group && group.length > 0) {
+          const ci = resolveTagColor(tag, tagColorMap);
+          const p = TAG_PALETTE[ci];
+          result.push({ key: tag, label: tag, color: p.text, skills: group });
+        }
+      }
+      if (noTag.length > 0) {
+        result.push({ key: "__NO_TAG__", label: "无标签", color: "#A8A5A0", skills: noTag });
+      }
+      return result;
+    }
+  }, [skills, hasActiveTarget, skillStatusMap, allTags, tagColorMap]);
+
+  let cardIndex = 0;
+
   return (
-    <div className="skill-grid">
-      {skills.map((skill, i) => {
-        const status = skillStatusMap?.get(skill.id);
-        return (
-          <div
-            key={skill.id}
-            data-skill-id={skill.id}
-            className={[
-              "skill-card",
-              hasActiveTarget ? "has-target" : "",
-              highlightedSkillId === skill.id ? "highlighted" : "",
-              exitingSkillId === skill.id ? "exiting" : "",
-            ].filter(Boolean).join(" ")}
-            style={{ animationDelay: `${Math.min(i, 8) * 50}ms` }}
-            onClick={() => exitingSkillId === skill.id ? undefined : onSelect(skill.id)}
-            onContextMenu={(e) => onContextMenu(e, skill)}
-          >
-            {/* Header: title + status position (always reserved) */}
-            <div className="card-header">
-              <div className="card-title">{skill.displayName}</div>
-              <div className="card-status-slot">
-                {hasActiveTarget && status ? (
-                  <span className={`card-status-badge ${statusClass(status.status)}`}>
-                    <span className={`status-dot ${statusClass(status.status)}`} />
-                    {statusLabel(status.status)}
-                  </span>
-                ) : (
-                  <>
-                    {skill.enabledCount > 0 && (
-                      <span className="card-stat-text">应用 {skill.enabledCount}</span>
-                    )}
-                    {skill.issueCount > 0 && (
-                      <span className="card-stat-text problem">问题 {skill.issueCount}</span>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-
-            <div className="card-desc">{skill.description}</div>
-
-            {/* Footer: tags only + hover action overlay */}
-            <div className="card-footer">
-              <div className="card-tags">
-                {skill.tags.map(t => {
-                  const ci = resolveTagColor(t, tagColorMap);
-                  const p = TAG_PALETTE[ci];
-                  return (
-                    <span key={t} className="tag" style={{ background: p.bg, color: p.text }}>{t}</span>
-                  );
-                })}
-              </div>
-            </div>
-            {hasActiveTarget && status && (
-              <div className="card-hover-action" onClick={e => e.stopPropagation()}>
-                {status.status === "applied" && (
-                  <button className="btn btn-sm btn-secondary" onClick={() => onWithdraw(skill.id)}>
-                    收回
-                  </button>
-                )}
-                {status.status === "notApplied" && (
-                  <button className="btn btn-sm btn-primary" onClick={() => onDeploy(skill.id)}>
-                    应用
-                  </button>
-                )}
-                {status.status === "problem" && (
-                  <button className="btn btn-sm btn-primary" onClick={() => onDeploy(skill.id, { confirmOverwrite: true })}>
-                    覆盖
-                  </button>
-                )}
-              </div>
-            )}
+    <div className="skill-grid-grouped">
+      {groups.map(group => (
+        <div key={group.key} className="skill-group">
+          <div className="skill-group-header">
+            <span className="skill-group-dot" style={{ background: group.color }} />
+            <span className="skill-group-title">{group.label}</span>
+            <span className="skill-group-count">{group.skills.length} 个技能</span>
           </div>
-        );
-      })}
+          <div className="skill-grid">
+            {group.skills.map(skill => {
+              const status = skillStatusMap?.get(skill.id);
+              const isNotApplied = hasActiveTarget && (!status || status.status === "notApplied");
+              const idx = cardIndex++;
+              return (
+                <div
+                  key={skill.id}
+                  data-skill-id={skill.id}
+                  className={[
+                    "skill-card",
+                    hasActiveTarget ? "has-target" : "",
+                    isNotApplied ? "dimmed" : "",
+                    highlightedSkillId === skill.id ? "highlighted" : "",
+                    exitingSkillId === skill.id ? "exiting" : "",
+                  ].filter(Boolean).join(" ")}
+                  style={{ animationDelay: `${Math.min(idx, 8) * 50}ms` }}
+                  onClick={() => exitingSkillId === skill.id ? undefined : onSelect(skill.id)}
+                  onContextMenu={(e) => onContextMenu(e, skill)}
+                >
+                  <div className="card-header">
+                    <div className="card-title">{skill.displayName}</div>
+                    <div className="card-status-slot">
+                      {hasActiveTarget && status ? (
+                        <span className={`card-status-badge ${statusClass(status.status)}`}>
+                          <span className={`status-dot ${statusClass(status.status)}`} />
+                          {statusLabel(status.status)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="card-desc">{skill.description}</div>
+
+                  <div className="card-footer">
+                    <div className="card-tags">
+                      {skill.tags.map(t => {
+                        const ci = resolveTagColor(t, tagColorMap);
+                        const p = TAG_PALETTE[ci];
+                        return (
+                          <span key={t} className="tag" style={{ background: p.bg, color: p.text }}>{t}</span>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Hover action - always show in both views */}
+                  <div className="card-hover-action" onClick={e => e.stopPropagation()}>
+                    {hasActiveTarget && status ? (
+                      <>
+                        {status.status === "applied" && (
+                          <button className="btn btn-sm btn-secondary" onClick={() => onWithdraw(skill.id)}>
+                            收回
+                          </button>
+                        )}
+                        {status.status === "notApplied" && (
+                          <button className="btn btn-sm btn-primary" onClick={() => onDeploy(skill.id)}>
+                            应用
+                          </button>
+                        )}
+                        {status.status === "problem" && (
+                          <button className="btn btn-sm btn-primary" onClick={() => onDeploy(skill.id, { confirmOverwrite: true })}>
+                            覆盖
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <button className="btn btn-sm btn-secondary" onClick={() => onSelect(skill.id)}>
+                        详情
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -974,11 +955,7 @@ function SkillDrawer({
     setDeleting(true);
     try {
       const nextState = await deleteSkill(skill.id);
-      showToast({
-        tone: "success",
-        title: "已删除技能",
-        message: `「${skill.displayName}」已从主库删除。`,
-      });
+      showToast({ tone: "success", text: `已删除「${skill.displayName}」` });
       setClosing(true);
       window.setTimeout(() => onDeleted(skill, nextState), 250);
     } catch (e) {
@@ -999,8 +976,7 @@ function SkillDrawer({
         await refresh();
         showToast({
           tone: "success",
-          title: options?.confirmOverwrite ? "已覆盖目标技能" : "已应用技能",
-          message: `「${skill.displayName}」已应用到「${target.name}」。`,
+          text: (options?.confirmOverwrite ? "已覆盖" : "已应用") + `「${skill.displayName}」`,
         });
       } catch (e) {
         showError("应用失败", e, "请确认目标目录存在并且当前账户有写入权限。");
@@ -1027,11 +1003,7 @@ function SkillDrawer({
     try {
       await withdrawSkill(skill.id, [{ targetId: target.id }]);
       await refresh();
-      showToast({
-        tone: "success",
-        title: "已收回技能",
-        message: `「${skill.displayName}」已从「${target.name}」收回。`,
-      });
+      showToast({ tone: "success", text: `已收回「${skill.displayName}」` });
     } catch (e) {
       showError("收回失败", e, "请确认目标中的技能是指向主库的软链接。");
     }
@@ -1255,146 +1227,6 @@ function TagEditor({
   );
 }
 
-// ── Tag Management Panel (inline below filter bar) ──
-
-function TagManagementPanel({
-  tagsInfo,
-  tagColorMap,
-  onColorChange,
-  onRename,
-  onDelete,
-  onMove,
-}: {
-  tagsInfo: TagInfo[];
-  tagColorMap: Map<string, number>;
-  onColorChange: (tag: string, colorIndex: number) => void;
-  onRename: (oldName: string, newName: string) => void;
-  onDelete: (tag: string) => void;
-  onMove: (tag: string, direction: "up" | "down") => void;
-}) {
-  const [editingTag, setEditingTag] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const [pickerTag, setPickerTag] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
-
-  // Close picker on outside click
-  useEffect(() => {
-    if (!pickerTag) return;
-    const handler = (e: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
-        setPickerTag(null);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [pickerTag]);
-
-  const handleRenameSubmit = (oldName: string) => {
-    const trimmed = editValue.trim();
-    if (trimmed && trimmed !== oldName) {
-      onRename(oldName, trimmed);
-    }
-    setEditingTag(null);
-  };
-
-  return (
-    <div className="tag-manage-panel">
-      <div className="tag-manage-header">
-        <span className="tag-manage-title">标签管理</span>
-        <span className="tag-manage-hint">用上下箭头排序 · 点击颜色修改 · 点击名称重命名</span>
-      </div>
-      <div className="tag-manage-list">
-        {tagsInfo.map((t, idx) => {
-          const ci = resolveTagColor(t.name, tagColorMap);
-          const p = TAG_PALETTE[ci];
-          return (
-            <div key={t.name} className="tag-manage-row">
-              <div className="tag-manage-color-wrap" style={{ position: "relative" }}>
-                <span
-                  className="tag-manage-dot"
-                  style={{ background: p.text }}
-                  onClick={() => setPickerTag(pickerTag === t.name ? null : t.name)}
-                />
-                {pickerTag === t.name && (
-                  <div className="tag-color-picker" ref={pickerRef}>
-                    {TAG_PALETTE.map((c, i) => (
-                      <span
-                        key={i}
-                        className={`tag-color-option ${i === ci ? "selected" : ""}`}
-                        style={{ background: c.text }}
-                        onClick={() => { onColorChange(t.name, i); setPickerTag(null); }}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-              {editingTag === t.name ? (
-                <input
-                  className="tag-manage-name-input"
-                  value={editValue}
-                  autoFocus
-                  onChange={e => setEditValue(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Enter") handleRenameSubmit(t.name);
-                    if (e.key === "Escape") setEditingTag(null);
-                  }}
-                  onBlur={() => handleRenameSubmit(t.name)}
-                />
-              ) : (
-                <span
-                  className="tag-manage-name"
-                  onClick={() => { setEditingTag(t.name); setEditValue(t.name); }}
-                >
-                  {t.name}
-                </span>
-              )}
-              <span className="tag-manage-count">{t.count} 个技能</span>
-              <span className="tag-manage-move">
-                <button
-                  className="tag-move-btn"
-                  disabled={idx === 0}
-                  onClick={() => onMove(t.name, "up")}
-                  title="上移"
-                >↑</button>
-                <button
-                  className="tag-move-btn"
-                  disabled={idx === tagsInfo.length - 1}
-                  onClick={() => onMove(t.name, "down")}
-                  title="下移"
-                >↓</button>
-              </span>
-              {confirmDelete === t.name ? (
-                <span className="tag-manage-confirm">
-                  <button className="tag-manage-confirm-btn" onClick={() => { onDelete(t.name); setConfirmDelete(null); }}>
-                    删除标签
-                  </button>
-                  <button className="tag-manage-cancel-btn" onClick={() => setConfirmDelete(null)}>
-                    取消
-                  </button>
-                </span>
-              ) : (
-                <button
-                  className="tag-manage-delete"
-                  onClick={() => setConfirmDelete(t.name)}
-                  title="删除标签"
-                >
-                  ×
-                </button>
-              )}
-            </div>
-          );
-        })}
-        {tagsInfo.length === 0 && (
-          <div className="tag-manage-empty">
-            还没有标签。打开任意技能卡片，在详情抽屉的标签区域点击「+」创建第一个标签。
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Context Menu (right-click on card) ──
 
 function SkillContextMenu({
@@ -1464,7 +1296,37 @@ function SkillContextMenu({
 // Settings Drawer
 // ────────────────────────────────────────
 
-function SettingsDrawer({ state, refresh, onClose }: { state: AppState; refresh: () => Promise<AppState>; onClose: () => void }) {
+function SettingsDrawer({ state, refresh, onClose, tagsInfo, setTagsInfo, tagColorMap, activeTag, setActiveTag }: {
+  state: AppState;
+  refresh: () => Promise<AppState>;
+  onClose: () => void;
+  tagsInfo: TagInfo[];
+  setTagsInfo: (tags: TagInfo[]) => void;
+  tagColorMap: Map<string, number>;
+  activeTag: string | null;
+  setActiveTag: (tag: string | null) => void;
+}) {
+  const [editingTag, setEditingTag] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [pickerTag, setPickerTag] = useState<string | null>(null);
+  const [confirmDeleteTag, setConfirmDeleteTag] = useState<string | null>(null);
+  const [newTagName, setNewTagName] = useState("");
+  const [showNewTagInput, setShowNewTagInput] = useState(false);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pickerTag) return;
+    const handler = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setPickerTag(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pickerTag]);
+
   const handleAddTarget = async () => {
     const selected = await open({ directory: true, title: "选择目标目录" });
     if (!selected) return;
@@ -1475,6 +1337,52 @@ function SettingsDrawer({ state, refresh, onClose }: { state: AppState; refresh:
   const handleRemoveTarget = async (id: string) => {
     await removeTarget(id);
     await refresh();
+  };
+
+  const handleRenameSubmit = async (oldName: string) => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== oldName) {
+      await renameTag(oldName, trimmed);
+      await refresh();
+      const updated = await getAllTagsInfo();
+      setTagsInfo(updated);
+      if (activeTag === oldName) setActiveTag(trimmed);
+    }
+    setEditingTag(null);
+  };
+
+  const handleColorChange = async (tag: string, colorIndex: number) => {
+    const updated = await setTagColor(tag, colorIndex);
+    setTagsInfo(updated);
+    setPickerTag(null);
+  };
+
+  const handleDeleteTag = async (tag: string) => {
+    await deleteTag(tag);
+    await refresh();
+    const updated = await getAllTagsInfo();
+    setTagsInfo(updated);
+    if (activeTag === tag) setActiveTag(null);
+    setConfirmDeleteTag(null);
+  };
+
+  const handleDrop = async (fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return;
+    const reordered = [...tagsInfo];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    setTagsInfo(reordered);
+    const updated = await reorderTags(reordered.map(t => t.name));
+    setTagsInfo(updated);
+  };
+
+  const handleNewTag = async () => {
+    const trimmed = newTagName.trim();
+    if (!trimmed) { setShowNewTagInput(false); return; }
+    const updated = await createTag(trimmed);
+    setTagsInfo(updated);
+    setNewTagName("");
+    setShowNewTagInput(false);
   };
 
   return (
@@ -1500,7 +1408,6 @@ function SettingsDrawer({ state, refresh, onClose }: { state: AppState; refresh:
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
               </button>
             </div>
-            <div className="settings-section-hint">所有技能以此目录为唯一事实源</div>
           </div>
 
           <div className="settings-section">
@@ -1528,7 +1435,125 @@ function SettingsDrawer({ state, refresh, onClose }: { state: AppState; refresh:
               </div>
             ))}
             <button className="settings-add-btn" onClick={handleAddTarget}>+ 添加目标</button>
-            <div className="settings-section-hint">技能通过软链接分发到目标目录</div>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-section-label">标签管理</div>
+            {tagsInfo.length > 0 ? (
+              <div className="settings-tag-list">
+                {tagsInfo.map((t, idx) => {
+                  const ci = resolveTagColor(t.name, tagColorMap);
+                  const p = TAG_PALETTE[ci];
+                  return (
+                    <div
+                      key={t.name}
+                      className={`settings-tag-row${dragIdx === idx ? " dragging" : ""}${dropIdx === idx ? " drop-above" : ""}`}
+                      draggable
+                      onDragStart={() => setDragIdx(idx)}
+                      onDragOver={e => { e.preventDefault(); setDropIdx(idx); }}
+                      onDragLeave={() => setDropIdx(null)}
+                      onDrop={e => { e.preventDefault(); if (dragIdx !== null) handleDrop(dragIdx, idx); setDragIdx(null); setDropIdx(null); }}
+                      onDragEnd={() => { setDragIdx(null); setDropIdx(null); }}
+                    >
+                      <div className="settings-tag-drag-handle">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>
+                      </div>
+                      <div className="settings-tag-color-wrap">
+                        <span
+                          className="settings-tag-dot"
+                          style={{ background: p.bg, color: p.text }}
+                          onClick={() => setPickerTag(pickerTag === t.name ? null : t.name)}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/></svg>
+                        </span>
+                        {pickerTag === t.name && (
+                          <div className="settings-tag-picker" ref={pickerRef}>
+                            {TAG_PALETTE.map((c, i) => (
+                              <span
+                                key={i}
+                                className={`settings-tag-picker-option ${i === ci ? "selected" : ""}`}
+                                style={{ background: c.bg, color: c.text }}
+                                onClick={() => handleColorChange(t.name, i)}
+                              >
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/></svg>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="settings-tag-name-area">
+                        {editingTag === t.name ? (
+                          <input
+                            className="settings-tag-name-input"
+                            value={editValue}
+                            autoFocus
+                            onChange={e => setEditValue(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === "Enter") handleRenameSubmit(t.name);
+                              if (e.key === "Escape") setEditingTag(null);
+                            }}
+                            onBlur={() => handleRenameSubmit(t.name)}
+                          />
+                        ) : (
+                          <span
+                            className="settings-tag-name"
+                            onClick={() => { setEditingTag(t.name); setEditValue(t.name); }}
+                          >
+                            {t.name}
+                          </span>
+                        )}
+                        <span className="settings-tag-count">{t.count} 个技能</span>
+                      </div>
+                      <div className="settings-tag-actions">
+                        {confirmDeleteTag === t.name ? (
+                          <>
+                            <button className="settings-tag-action-btn settings-tag-confirm-delete" onClick={() => handleDeleteTag(t.name)}>
+                              确认
+                            </button>
+                            <button className="settings-tag-action-btn" onClick={() => setConfirmDeleteTag(null)}>
+                              取消
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            className="settings-tag-action-btn settings-tag-action-danger"
+                            onClick={() => setConfirmDeleteTag(t.name)}
+                            title="删除"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="settings-tag-empty">
+                还没有标签。在技能详情中为技能添加标签即可自动创建。
+              </div>
+            )}
+            {showNewTagInput ? (
+              <div className="settings-tag-new-row">
+                <span className="settings-tag-dot" style={{ background: TAG_PALETTE[0].bg, opacity: 0.5 }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill={TAG_PALETTE[0].text}><circle cx="12" cy="12" r="5"/></svg>
+                </span>
+                <input
+                  className="settings-tag-name-input"
+                  placeholder="输入标签名称，回车确认"
+                  value={newTagName}
+                  autoFocus
+                  onChange={e => setNewTagName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") handleNewTag();
+                    if (e.key === "Escape") { setShowNewTagInput(false); setNewTagName(""); }
+                  }}
+                  onBlur={() => handleNewTag()}
+                />
+              </div>
+            ) : (
+              <button className="settings-add-btn" onClick={() => setShowNewTagInput(true)}>+ 新建标签</button>
+            )}
           </div>
 
         </div>
@@ -1702,18 +1727,24 @@ function ConfirmDialog({
 
 function Toast({
   message,
-  onClose,
+  exiting,
+  onMouseEnter,
+  onMouseLeave,
 }: {
   message: ToastMessage;
-  onClose: () => void;
+  exiting: boolean;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
 }) {
   return (
-    <div className={`toast toast-${message.tone}`} role="status" aria-live="polite">
-      <div>
-        <div className="toast-title">{message.title}</div>
-        <div className="toast-message">{message.message}</div>
-      </div>
-      <button className="toast-close" onClick={onClose} aria-label="关闭提示">×</button>
+    <div
+      className={`toast toast-${message.tone}${exiting ? " toast-exiting" : ""}`}
+      role="status"
+      aria-live="polite"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <span className="toast-text">{message.text}</span>
     </div>
   );
 }
