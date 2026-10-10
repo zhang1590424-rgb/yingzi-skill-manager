@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- 影子: an entity square with its offset shadow echo. Inherits color via currentColor. -->
+  <rect x="7.5" y="3.5" width="13" height="13" rx="3.5" fill="currentColor" opacity="0.35"/>
+  <rect x="3.5" y="7.5" width="13" height="13" rx="3.5" fill="currentColor"/>
+</svg>

@@ -1,0 +1,6 @@
+# 影子 panel bundle patch: inserts the panel plugin row into the profile.
+# The row id is referenced nowhere else; the package carries both halves.
+- insert:
+    - id: yingzi-panel
+      name: '@local/yingzi-panel'
+      config: {}

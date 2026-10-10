@@ -1,0 +1,35 @@
+{
+  "name": "@local/yingzi-panel",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "影子 skill library panel for the Harness sidebar: browse the local skill library, inspect per-target shadow status, deploy and withdraw symlinks.",
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "yingzi.meta.title",
+    "description": "yingzi.meta.description"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "lib/",
+    "client/",
+    "locale/",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
