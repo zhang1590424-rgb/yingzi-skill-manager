@@ -10,7 +10,10 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build && node scripts/copy-macos-app.mjs",
-    "tauri:build:test-dmg": "tauri build --bundles app,dmg && node scripts/copy-macos-app.mjs && node scripts/prepare-github-release.mjs"
+    "tauri:build:test-dmg": "tauri build --bundles app,dmg && node scripts/copy-macos-app.mjs && node scripts/prepare-github-release.mjs",
+    "test:adapter": "node --experimental-strip-types --test scripts/test-adapter.test.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
@@ -23,10 +26,15 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "jsdom": "^25.0.1",
     "typescript": "~5.9.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^3.2.4"
   }
 }
