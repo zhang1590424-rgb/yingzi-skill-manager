@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>影子项目审查报告 · 视觉 交互 功能 稳定性</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='6' width='14' height='14' rx='3' fill='%232F3437'/%3E%3Crect x='12' y='12' width='14' height='14' rx='3' fill='none' stroke='%23A8A5A0' stroke-width='2'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#FBFBFA; --surface:#FFFFFF; --line:#EAEAEA; --ink:#2F3437; --ink2:#787774; --ink3:#A8A5A0;
+    --p0:#9F2F2D; --p0bg:#FDECEC; --p1:#9A5B13; --p1bg:#FBF1E2; --p2:#3B5F7A; --p2bg:#EAF1F6;
+    --ok:#346538; --okbg:#E8F2E9;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:inherit}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 18px 80px}
+  header.top{display:flex;flex-direction:column;gap:14px;padding-bottom:22px;border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:10px;color:var(--ink2);font-size:14px}
+  .brand svg{flex:none}
+  h1{margin:0;font-size:26px;line-height:1.3;font-weight:650;letter-spacing:-0.01em}
+  .lede{margin:0;color:var(--ink2);max-width:44em}
+  .meta{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:13px;color:var(--ink2)}
+  .meta b{color:var(--ink);font-weight:600}
+  nav.toc{position:sticky;top:0;z-index:5;background:rgba(251,251,250,.96);border-bottom:1px solid var(--line);margin:0 -18px;padding:10px 18px;display:flex;gap:6px;overflow-x:auto;white-space:nowrap}
+  nav.toc a{text-decoration:none;font-size:14px;color:var(--ink2);padding:6px 10px;border-radius:6px;min-height:36px;display:inline-flex;align-items:center}
+  nav.toc a:hover,nav.toc a:focus-visible{background:#F1F0EE;color:var(--ink)}
+  section{padding-top:36px}
+  h2{font-size:20px;margin:0 0 6px;font-weight:650}
+  h3{font-size:16px;margin:22px 0 8px;font-weight:650}
+  .sub{color:var(--ink2);margin:0 0 18px}
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px}
+  /* 结论区 */
+  .verdict{display:grid;grid-template-columns:1fr;gap:14px;margin-top:22px}
+  .verdict .panel p{margin:0}
+  .score{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  .score div{border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--surface)}
+  .score .n{font-size:28px;font-weight:650;line-height:1.1}
+  .score .l{font-size:13px;color:var(--ink2)}
+  .n.p0{color:var(--p0)} .n.p1{color:var(--p1)} .n.p2{color:var(--p2)} .n.ok{color:var(--ok)}
+  /* 优先级徽标 */
+  .pill{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap}
+  .pill.p0{background:var(--p0bg);color:var(--p0)} .pill.p1{background:var(--p1bg);color:var(--p1)} .pill.p2{background:var(--p2bg);color:var(--p2)} .pill.ok{background:var(--okbg);color:var(--ok)}
+  .dim{font-size:12px;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:1px 8px;white-space:nowrap}
+  /* 问题卡 */
+  .issue{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:12px}
+  .issue.p0{border-color:rgba(159,47,45,.35)}
+  .issue-h{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
+  .issue-h .id{font-family:var(--mono);font-size:13px;color:var(--ink3)}
+  .issue-h h4{margin:0;font-size:16px;font-weight:650;flex:1 1 280px;min-width:0}
+  .kv{display:grid;grid-template-columns:1fr;gap:6px;margin-top:8px}
+  .kv div{min-width:0}
+  .kv .k{font-size:13px;color:var(--ink2);font-weight:600;margin-right:6px}
+  code,.code{font-family:var(--mono);font-size:13px;background:#F4F3F1;border-radius:4px;padding:1px 5px;word-break:break-all}
+  .cost{font-size:13px;color:var(--ink2)}
+  /* 图 */
+  figure{margin:0}
+  figure img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:8px}
+  figcaption{font-size:13px;color:var(--ink2);margin-top:6px}
+  .shots{display:grid;grid-template-columns:1fr;gap:14px}
+  svg text{font-family:var(--sans)}
+  .diagram{overflow-x:auto}
+  .diagram svg{min-width:640px;width:100%;height:auto;display:block}
+  /* 表格 */
+  table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:14px}
+  th,td{border-bottom:1px solid var(--line);padding:9px 8px;text-align:left;vertical-align:top;word-break:break-word}
+  th{font-size:13px;color:var(--ink2);font-weight:600}
+  .tbl{overflow-x:auto}
+  .tbl table{min-width:640px}
+  /* 路线图 */
+  .road{display:grid;grid-template-columns:1fr;gap:12px}
+  .stage{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .stage .t{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .stage .t b{font-size:16px}
+  .stage ul{margin:6px 0 0;padding-left:18px}
+  .stage li{margin:3px 0}
+  ul.plain{margin:6px 0;padding-left:18px}
+  .note{font-size:13px;color:var(--ink2)}
+  .callout{border-left:3px solid var(--p0);background:var(--p0bg);padding:12px 14px;border-radius:0 8px 8px 0;margin:12px 0}
+  footer{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);font-size:13px;color:var(--ink2)}
+  :focus-visible{outline:2px solid #111;outline-offset:2px}
+  @media (min-width:768px){
+    .wrap{padding:40px 28px 96px}
+    nav.toc{margin:0 -28px;padding:10px 28px}
+    h1{font-size:30px}
+    .verdict{grid-template-columns:1.4fr 1fr}
+    .score{grid-template-columns:repeat(2,1fr)}
+    .kv{grid-template-columns:1fr 1fr;column-gap:20px}
+    .kv .wide{grid-column:1 / -1}
+    .shots{grid-template-columns:1fr 1fr}
+    .road{grid-template-columns:repeat(3,1fr)}
+  }
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  @media print{nav.toc{position:static}.issue,.stage{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><rect x="6" y="6" width="14" height="14" rx="3" fill="#2F3437"/><rect x="12" y="12" width="14" height="14" rx="3" fill="none" stroke="#A8A5A0" stroke-width="2"/></svg>
+    影子 · 本地 Skill 管理器
+  </div>
+  <h1>项目深度审查：视觉、交互、功能、稳定性</h1>
+  <p class="lede">整体工程质量不错：自动化测试全部通过，分发安全规则（默认不覆盖、冲突单独确认、内容指纹校验）设计得很扎实。但审查发现 1 个已复现的误删数据缺陷，需要在下一次发版前修复；另有几处会让用户“以为成功其实没成功”或“界面卡住”的问题。</p>
+  <div class="meta">
+    <span>审查日期 <b>2026-10-13</b></span>
+    <span>代码基线 <b>4f02695 + 未提交改动（15 个文件，+3811 / -729 行）</b></span>
+    <span>方法 <b>通读源码 · 跑构建与测试 · 浏览器实测截图 · 核对依赖库源码</b></span>
+  </div>
+</header>
+
+<nav class="toc" aria-label="目录">
+  <a href="#fixed">修复状态</a>
+  <a href="#verdict">结论</a>
+  <a href="#p0">必须先修</a>
+  <a href="#all">问题总表</a>
+  <a href="#stability">稳定性</a>
+  <a href="#interaction">交互</a>
+  <a href="#visual">视觉</a>
+  <a href="#feature">功能</a>
+  <a href="#engineering">工程</a>
+  <a href="#roadmap">修复路线</a>
+  <a href="#method">验证范围</a>
+</nav>
+
+<section id="fixed">
+  <h2>修复状态（2026-10-13 更新）</h2>
+  <p class="sub">20 条问题已全部在代码中修复，并重新打包。下表“验证”一列说明每条修复是用什么方式确认的。</p>
+  <div class="score" aria-label="修复后检查结果" style="margin-bottom:14px">
+    <div><div class="n ok">20/20</div><div class="l">问题已修复</div></div>
+    <div><div class="n ok">99</div><div class="l">自动化测试通过（前端 55 · 适配层 8 · 后端 36）</div></div>
+    <div><div class="n ok">0</div><div class="l">clippy 警告（原 2 条）</div></div>
+    <div><div class="n p1">待做</div><div class="l">真机点击验收（屏幕锁定，需解锁后补做）</div></div>
+  </div>
+  <div class="tbl panel" style="padding:6px 10px">
+    <table>
+      <colgroup><col style="width:9%"><col style="width:45%"><col style="width:46%"></colgroup>
+      <thead><tr><th>编号</th><th>怎么修的</th><th>验证</th></tr></thead>
+      <tbody>
+        <tr><td>P0-1</td><td>删除改用应用内确认框；仍有启用位置时只提示、不给删除按钮</td><td>4 条交互测试；变异测试确认把旧写法放回去时这些测试会失败；浏览器实测取消后技能仍在</td></tr>
+        <tr><td>P0-2</td><td>抽屉与卡片共用同一个收回函数，按后端报告决定提示色调</td><td>2 条交互测试（失败显示红色、成功显示绿色）</td></tr>
+        <tr><td>S1</td><td>21 个后端命令全部改为后台线程执行</td><td>36 条后端测试通过；已核对 Tauri 宏源码中该属性的调度方式</td></tr>
+        <tr><td>S2</td><td>所有写操作统一套失败兜底；拖拽排序失败时恢复原顺序</td><td>交互测试：标签保存失败时出现持久错误条</td></tr>
+        <tr><td>S3</td><td>批量结果记住操作类型，重试沿用；按钮文案写明“重试收回 / 重试应用”</td><td>交互测试：收回失败后重试只调用收回，不调用应用</td></tr>
+        <tr><td>S4</td><td>读取状态时不再写数据库；部署快照写入改为单事务，仅测试保留</td><td>后端测试用数据库版本号确认 3 次读取零写入，并用对照测试证明探针有效</td></tr>
+        <tr><td>I1</td><td>卡片可 Tab 聚焦、Enter 打开；下拉带展开状态和键盘导航</td><td>交互测试 + 浏览器实测</td></tr>
+        <tr><td>I2</td><td>窗口重新获得焦点时静默刷新；顶栏新增刷新按钮，支持 ⌘R</td><td>2 条交互测试</td></tr>
+        <tr><td>I3</td><td>处理中状态改为可渲染的集合，键名统一，按钮显示“应用中…”</td><td>代码审查 + 原有防双击测试</td></tr>
+        <tr><td>I4</td><td>批量全部成功只弹绿色提示；部分失败才显示黄色或红色面板</td><td>交互测试 + 单元测试</td></tr>
+        <tr><td>I5</td><td>标签栏“全部”只清标签；状态改为分段控件，新增“全部状态”</td><td>交互测试 + 浏览器实测</td></tr>
+        <tr><td>V1</td><td>状态筛选并入标签行，工具栏收紧：顶部从 114px 降到 98px</td><td>1040×680 下首屏完整卡片从 4 张升到 5 张（目标视角 7 张），三种尺寸均无横向溢出</td></tr>
+        <tr><td>V2</td><td>下拉箭头换成 SVG，展开时旋转</td><td>浏览器截图</td></tr>
+        <tr><td>V3</td><td>错误条、批量结果、横幅移入工具栏下方的文档流，纵向排列不重叠</td><td>浏览器截图 + 样式审查</td></tr>
+        <tr><td>F1</td><td>失效目标在下拉和设置中标注“路径不存在”；选中时显示横幅并禁用应用</td><td>交互测试</td></tr>
+        <tr><td>F2</td><td>后端新增可覆盖字段（仅冲突和失效为真），卡片与抽屉共用</td><td>2 条后端测试 + 交互测试 + 适配层测试</td></tr>
+        <tr><td>F3</td><td>搜索匹配标签名；重复添加目标会报“该目标已存在”</td><td>后端 2 条测试 + 单元测试 + 交互测试</td></tr>
+        <tr><td>E1</td><td>恢复文件确认是旧草稿后加入 .gitignore；提交由你操作</td><td>逐行对比恢复文件与现有测试</td></tr>
+        <tr><td>E2</td><td>AGENTS / DESIGN / PRODUCT / README 已与代码同步</td><td>人工核对</td></tr>
+        <tr><td>E3</td><td>合并重复的应用逻辑，焦点循环抽成共用 hook，清理死代码与死样式</td><td>类型检查 + 全部测试</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="shots" style="margin-top:14px">
+    <figure>
+      <img src="assets/fix-01-target-1040.png" alt="修复后 1040×680 窗口：筛选合并为一行，右侧为状态分段控件，顶部高度降低" loading="lazy">
+      <figcaption>修复后：最小窗口下标签与状态筛选合为一行，顶部更矮。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/fix-02-delete-confirm.png" alt="修复后删除技能时出现应用内确认框，按钮为先不操作和永久删除" loading="lazy">
+      <figcaption>修复后：删除改为应用内确认，点“先不操作”不会有任何改动。</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="verdict">
+  <h2>一句话结论</h2>
+  <p class="sub">安全规则设计得对，但有一处关键交互没落实到真实运行环境里。先修 P0，再处理“反馈不真实”和“界面卡住”这两类 P1 问题。</p>
+  <div class="verdict">
+    <div class="panel">
+      <p><b>最值得关注的发现：</b>在打包好的 App 里删除技能时，系统弹出的确认框<b>还没等用户选择，删除就已经执行了</b>。用户点“取消”也照样会删。我在浏览器中按 App 的真实运行方式模拟了这一行为并复现成功（见 P0-1）。</p>
+      <p style="margin-top:10px"><b>原因（通俗版）：</b>代码把确认框当成“会停下来等用户回答”来写，但在 Tauri 这个桌面框架里，确认框是“先放行、稍后才回答”。代码拿到的不是“是/否”，而是一张“待会儿告诉你”的回执，回执本身被当成了“是”。</p>
+      <p style="margin-top:10px"><b>好消息：</b>技能还有已启用位置时，后端会拒绝删除，所以误删只会发生在“当前没有应用到任何目标”的技能上。但主库是唯一事实源，删了就没了。</p>
+    </div>
+    <div class="score" aria-label="问题数量汇总">
+      <div><div class="n p0">2</div><div class="l">P0 · 发版前必须修</div></div>
+      <div><div class="n p1">8</div><div class="l">P1 · 影响信任或体验</div></div>
+      <div><div class="n p2">10</div><div class="l">P2 · 打磨与工程债</div></div>
+      <div><div class="n ok">58</div><div class="l">自动化测试通过（前端 28 · 后端 30）</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="p0">
+  <h2>必须先修的两个问题（P0）</h2>
+  <p class="sub">这两条都可能让用户丢失数据或做出错误判断，建议发下一个测试版之前修完。</p>
+
+  <div class="issue p0">
+    <div class="issue-h"><span class="id">P0-1</span><span class="pill p0">P0</span><span class="dim">稳定性 · 数据安全</span><h4>删除技能时，点“取消”也会被删除</h4></div>
+    <div class="callout"><b>已实测复现：</b>按 App 中 dialog 插件的真实行为替换确认框，并让它返回“取消”。结果：确认框被调用 1 次，随后界面立即提示 <code>已删除「lark-doc」</code>，卡片消失。</div>
+    <div class="diagram panel" role="img" aria-label="删除流程：现状与修复后的对比">
+      <svg viewBox="0 0 960 300" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#787774"/></marker>
+          <marker id="arR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9F2F2D"/></marker>
+          <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#346538"/></marker>
+        </defs>
+        <text x="0" y="22" font-size="15" font-weight="700" fill="#9F2F2D">现状</text>
+        <rect x="0" y="36" width="150" height="56" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="75" y="60" font-size="14" text-anchor="middle" fill="#2F3437">点击垃圾桶</text>
+        <text x="75" y="80" font-size="12" text-anchor="middle" fill="#787774">详情抽屉</text>
+        <line x1="150" y1="64" x2="196" y2="64" stroke="#787774" stroke-width="1.5" marker-end="url(#ar)"/>
+        <rect x="200" y="36" width="210" height="56" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="305" y="60" font-size="14" text-anchor="middle" fill="#2F3437">confirm() 立刻返回“回执”</text>
+        <text x="305" y="80" font-size="12" text-anchor="middle" fill="#787774">回执被当成“同意”</text>
+        <line x1="410" y1="64" x2="456" y2="64" stroke="#9F2F2D" stroke-width="1.5" marker-end="url(#arR)"/>
+        <rect x="460" y="36" width="180" height="56" rx="8" fill="#FDECEC" stroke="rgba(159,47,45,.4)"/>
+        <text x="550" y="60" font-size="14" text-anchor="middle" fill="#9F2F2D" font-weight="600">立即调用删除</text>
+        <text x="550" y="80" font-size="12" text-anchor="middle" fill="#9F2F2D">主库目录被移除</text>
+        <line x1="640" y1="64" x2="686" y2="64" stroke="#787774" stroke-width="1.5" marker-end="url(#ar)"/>
+        <rect x="690" y="36" width="260" height="56" rx="8" fill="#fff" stroke="#EAEAEA" stroke-dasharray="4 3"/>
+        <text x="820" y="60" font-size="14" text-anchor="middle" fill="#2F3437">系统弹窗才出现</text>
+        <text x="820" y="80" font-size="12" text-anchor="middle" fill="#787774">用户点什么都已经晚了</text>
+
+        <text x="0" y="172" font-size="15" font-weight="700" fill="#346538">修复后</text>
+        <rect x="0" y="186" width="150" height="56" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="75" y="210" font-size="14" text-anchor="middle" fill="#2F3437">点击垃圾桶</text>
+        <text x="75" y="230" font-size="12" text-anchor="middle" fill="#787774">详情抽屉</text>
+        <line x1="150" y1="214" x2="196" y2="214" stroke="#787774" stroke-width="1.5" marker-end="url(#ar)"/>
+        <rect x="200" y="186" width="210" height="56" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="305" y="210" font-size="14" text-anchor="middle" fill="#2F3437">应用内确认框</text>
+        <text x="305" y="230" font-size="12" text-anchor="middle" fill="#787774">复用已有 ConfirmDialog</text>
+        <line x1="410" y1="204" x2="456" y2="196" stroke="#346538" stroke-width="1.5" marker-end="url(#arG)"/>
+        <line x1="410" y1="226" x2="456" y2="262" stroke="#787774" stroke-width="1.5" marker-end="url(#ar)"/>
+        <rect x="460" y="172" width="180" height="44" rx="8" fill="#E8F2E9" stroke="rgba(52,101,56,.35)"/>
+        <text x="550" y="199" font-size="14" text-anchor="middle" fill="#346538" font-weight="600">确认 → 才删除</text>
+        <rect x="460" y="244" width="180" height="44" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="550" y="271" font-size="14" text-anchor="middle" fill="#2F3437">取消 → 什么都不做</text>
+        <line x1="640" y1="194" x2="686" y2="194" stroke="#787774" stroke-width="1.5" marker-end="url(#ar)"/>
+        <rect x="690" y="172" width="260" height="44" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="820" y="199" font-size="14" text-anchor="middle" fill="#2F3437">退出动画 + 成功提示</text>
+      </svg>
+    </div>
+    <div class="kv">
+      <div><span class="k">证据</span><code>src/App.tsx:1106</code> 写的是 <code>if (!confirm(...)) return;</code>。dialog 插件 2.7.1 会在启动时把 <code>window.confirm</code> 换成异步函数（插件源码 <code>guest-js/init.ts:14</code>，作者注释直说“tauri does not have sync IPC”）。异步函数返回的是 Promise 对象，取反永远为假，所以删除总会继续执行。</div>
+      <div><span class="k">额外问题</span>就算异步等到了，插件调用的 <code>plugin:dialog|confirm</code> 命令在 2.7.1 中并不存在（只有 open / save / message），项目权限也只开了 open。换句话说，这个系统确认框在当前 App 里本来就无法正常工作。</div>
+      <div><span class="k">为什么测试没发现</span>前端测试运行在模拟浏览器中，没有 dialog 插件，<code>confirm</code> 是同步的；而且 28 个测试里没有一个覆盖删除路径。</div>
+      <div><span class="k">修复建议</span>改用项目里已有的应用内 <code>ConfirmDialog</code>（批量操作、覆盖都已经在用），风格也能统一。删除确认里写清“会从主库永久移除，不可撤销”。顺手补一条删除路径的交互测试。</div>
+      <div class="wide cost">改动成本：小（约 20 行）。影响：彻底消除误删风险，同时让所有危险操作的确认样式一致。</div>
+    </div>
+    <figure style="margin-top:12px">
+      <img src="assets/15-delete-without-confirm.png" alt="复现截图：确认框返回取消后，界面仍提示已删除 lark-doc，飞书分组中的卡片被移除" loading="lazy">
+      <figcaption>复现截图：确认框返回“取消”后，顶部仍出现“已删除「lark-doc」”。模拟数据环境，不涉及真实技能库。</figcaption>
+    </figure>
+  </div>
+
+  <div class="issue p0">
+    <div class="issue-h"><span class="id">P0-2</span><span class="pill p0">P0</span><span class="dim">功能 · 状态可信度</span><h4>详情抽屉里的“收回”不看结果，失败了也提示成功</h4></div>
+    <div class="kv">
+      <div><span class="k">现象</span>在详情抽屉的“应用状态”里点“收回”，无论后端实际返回什么，都显示绿色的 <code>已收回「xxx」</code>。</div>
+      <div><span class="k">证据</span><code>src/App.tsx:1160-1168</code> 丢弃了 <code>withdrawSkill</code> 的返回报告。而后端在“目标位置不是指向主库的软链接”时不会抛错，只会在报告的 errors 里写一条“未改动”（<code>commands.rs:530</code>）。</div>
+      <div><span class="k">为什么是 P0</span>直接违反 PRODUCT.md 里写明的硬规则：“errors 大于 0 时禁止显示 success toast”。用户会以为技能已从某个项目撤下，实际仍在生效。卡片上的同一操作走的是正确逻辑，只有抽屉这条路漏了。</div>
+      <div><span class="k">修复建议</span>与卡片保持一致：用 <code>explainReport(report)</code> 决定提示色调和文案；刷新失败时显示“状态暂未核对”横幅。</div>
+      <div class="wide cost">改动成本：极小（约 5 行）。影响：保证“提示说成功 = 真的成功”。</div>
+    </div>
+  </div>
+</section>
+
+<section id="all">
+  <h2>问题总表</h2>
+  <p class="sub">共 20 条，按优先级排列。“成本”指大致代码改动量：小 &lt; 半天，中 0.5–2 天，大 &gt; 2 天。</p>
+  <div class="tbl panel" style="padding:6px 10px">
+    <table>
+      <colgroup><col style="width:9%"><col style="width:9%"><col style="width:12%"><col style="width:52%"><col style="width:9%"><col style="width:9%"></colgroup>
+      <thead><tr><th>编号</th><th>级别</th><th>维度</th><th>问题</th><th>成本</th><th>位置</th></tr></thead>
+      <tbody>
+        <tr><td>P0-1</td><td><span class="pill p0">P0</span></td><td>稳定性</td><td>删除确认不等待，点取消也会删</td><td>小</td><td><a href="#p0">详情</a></td></tr>
+        <tr><td>P0-2</td><td><span class="pill p0">P0</span></td><td>功能</td><td>抽屉“收回”失败也提示成功</td><td>小</td><td><a href="#p0">详情</a></td></tr>
+        <tr><td>S1</td><td><span class="pill p1">P1</span></td><td>稳定性</td><td>所有后端命令在主线程同步执行，扫描或计算指纹时整个窗口卡住</td><td>小</td><td><a href="#stability">详情</a></td></tr>
+        <tr><td>S2</td><td><span class="pill p1">P1</span></td><td>稳定性</td><td>8 个写操作没有失败兜底，出错时静默无反馈</td><td>小</td><td><a href="#stability">详情</a></td></tr>
+        <tr><td>S3</td><td><span class="pill p1">P1</span></td><td>稳定性</td><td>“重试失败项”固定按“应用”重试，收回失败时会反向执行</td><td>小</td><td><a href="#stability">详情</a></td></tr>
+        <tr><td>S4</td><td><span class="pill p1">P1</span></td><td>稳定性</td><td>每次读取状态都清空重写部署快照表，且没有事务</td><td>小</td><td><a href="#stability">详情</a></td></tr>
+        <tr><td>I1</td><td><span class="pill p1">P1</span></td><td>交互</td><td>技能卡片无法用键盘聚焦，键盘用户打不开详情</td><td>小</td><td><a href="#interaction">详情</a></td></tr>
+        <tr><td>I2</td><td><span class="pill p1">P1</span></td><td>交互</td><td>App 外部改动不会自动刷新，也没有手动刷新入口</td><td>小</td><td><a href="#interaction">详情</a></td></tr>
+        <tr><td>F1</td><td><span class="pill p1">P1</span></td><td>功能</td><td>目标“项目根目录不存在”在界面上没有任何提示</td><td>中</td><td><a href="#feature">详情</a></td></tr>
+        <tr><td>F2</td><td><span class="pill p1">P1</span></td><td>功能</td><td>抽屉的“覆盖”按钮永远不出现，卡片的“覆盖”却对所有问题都出现，两处规则相反</td><td>小</td><td><a href="#feature">详情</a></td></tr>
+        <tr><td>I3</td><td><span class="pill p2">P2</span></td><td>交互</td><td>卡片按钮的“处理中”禁用永远不生效</td><td>小</td><td><a href="#interaction">详情</a></td></tr>
+        <tr><td>I4</td><td><span class="pill p2">P2</span></td><td>交互</td><td>批量结果面板全成功时也用红色错误样式</td><td>小</td><td><a href="#interaction">详情</a></td></tr>
+        <tr><td>I5</td><td><span class="pill p2">P2</span></td><td>交互</td><td>标签筛选“全部”会顺带清掉状态筛选</td><td>小</td><td><a href="#interaction">详情</a></td></tr>
+        <tr><td>V1</td><td><span class="pill p2">P2</span></td><td>视觉</td><td>顶部区域在 680px 高窗口下占 24%，首屏只看得到 4 张卡</td><td>中</td><td><a href="#visual">详情</a></td></tr>
+        <tr><td>V2</td><td><span class="pill p2">P2</span></td><td>视觉</td><td>目标下拉箭头用“‹”字符旋转，展开态无变化</td><td>小</td><td><a href="#visual">详情</a></td></tr>
+        <tr><td>V3</td><td><span class="pill p2">P2</span></td><td>视觉</td><td>多个横幅和提示都钉在顶部 60px 处，同时出现会互相遮挡</td><td>中</td><td><a href="#visual">详情</a></td></tr>
+        <tr><td>F3</td><td><span class="pill p2">P2</span></td><td>功能</td><td>搜索不匹配标签名；重复添加同一目标会静默覆盖</td><td>小</td><td><a href="#feature">详情</a></td></tr>
+        <tr><td>E1</td><td><span class="pill p2">P2</span></td><td>工程</td><td>3800 行改动未提交，且有 .recovered 恢复文件残留</td><td>小</td><td><a href="#engineering">详情</a></td></tr>
+        <tr><td>E2</td><td><span class="pill p2">P2</span></td><td>工程</td><td>AGENTS.md / DESIGN.md 与代码不一致</td><td>小</td><td><a href="#engineering">详情</a></td></tr>
+        <tr><td>E3</td><td><span class="pill p2">P2</span></td><td>工程</td><td>App.tsx 单文件 2095 行，死代码与重复逻辑开始累积</td><td>中</td><td><a href="#engineering">详情</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="stability">
+  <h2>稳定性</h2>
+  <p class="sub">核心是两件事：别让界面卡住，别让失败无声无息。</p>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">S1</span><span class="pill p1">P1</span><span class="dim">性能 · 卡顿</span><h4>后端命令全部在主线程执行，重活会让整个窗口“转圈”</h4></div>
+    <div class="diagram panel" role="img" aria-label="同步命令占用主线程与改为异步命令后的对比架构图">
+      <svg viewBox="0 0 960 250" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#787774"/></marker></defs>
+        <text x="0" y="20" font-size="15" font-weight="700" fill="#9F2F2D">现状：同步命令</text>
+        <rect x="0" y="34" width="140" height="70" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="70" y="64" font-size="14" text-anchor="middle" fill="#2F3437">界面</text>
+        <text x="70" y="84" font-size="12" text-anchor="middle" fill="#787774">点击 / 滚动 / 动画</text>
+        <line x1="140" y1="69" x2="186" y2="69" stroke="#787774" stroke-width="1.5" marker-end="url(#a2)"/>
+        <rect x="190" y="34" width="270" height="70" rx="8" fill="#FDECEC" stroke="rgba(159,47,45,.4)"/>
+        <text x="325" y="60" font-size="14" text-anchor="middle" fill="#9F2F2D" font-weight="600">主线程（只有一条）</text>
+        <text x="325" y="80" font-size="12" text-anchor="middle" fill="#9F2F2D">扫描全部目录 · 计算指纹 · 解压 ZIP</text>
+        <text x="325" y="96" font-size="12" text-anchor="middle" fill="#9F2F2D">期间界面无法响应</text>
+        <line x1="460" y1="69" x2="506" y2="69" stroke="#787774" stroke-width="1.5" marker-end="url(#a2)"/>
+        <rect x="510" y="34" width="190" height="70" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="605" y="64" font-size="14" text-anchor="middle" fill="#2F3437">文件系统 + SQLite</text>
+        <text x="605" y="84" font-size="12" text-anchor="middle" fill="#787774">网盘目录会更慢</text>
+
+        <text x="0" y="150" font-size="15" font-weight="700" fill="#346538">修复后：async 命令</text>
+        <rect x="0" y="164" width="140" height="70" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="70" y="194" font-size="14" text-anchor="middle" fill="#2F3437">界面</text>
+        <text x="70" y="214" font-size="12" text-anchor="middle" fill="#787774">始终可响应</text>
+        <line x1="140" y1="199" x2="186" y2="199" stroke="#787774" stroke-width="1.5" marker-end="url(#a2)"/>
+        <rect x="190" y="164" width="120" height="70" rx="8" fill="#E8F2E9" stroke="rgba(52,101,56,.35)"/>
+        <text x="250" y="194" font-size="14" text-anchor="middle" fill="#346538" font-weight="600">主线程</text>
+        <text x="250" y="214" font-size="12" text-anchor="middle" fill="#346538">只负责转发</text>
+        <line x1="310" y1="199" x2="356" y2="199" stroke="#787774" stroke-width="1.5" marker-end="url(#a2)"/>
+        <rect x="360" y="164" width="200" height="70" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="460" y="194" font-size="14" text-anchor="middle" fill="#2F3437">后台工作线程</text>
+        <text x="460" y="214" font-size="12" text-anchor="middle" fill="#787774">慢操作在这里跑</text>
+        <line x1="560" y1="199" x2="606" y2="199" stroke="#787774" stroke-width="1.5" marker-end="url(#a2)"/>
+        <rect x="610" y="164" width="190" height="70" rx="8" fill="#fff" stroke="#EAEAEA"/>
+        <text x="705" y="194" font-size="14" text-anchor="middle" fill="#2F3437">文件系统 + SQLite</text>
+        <text x="830" y="194" font-size="12" fill="#787774">改动：命令前</text>
+        <text x="830" y="212" font-size="12" fill="#787774">加 async 关键字</text>
+      </svg>
+    </div>
+    <div class="kv">
+      <div><span class="k">证据</span>21 个命令全部是普通同步函数（<code>commands.rs</code>）。Tauri 官方文档写明：没有 async 关键字的命令会在主线程上执行<a href="https://tauri.app/develop/calling-rust/" target="_blank" rel="noopener">（来源）</a>。</div>
+      <div><span class="k">哪里最慢</span><code>get_app_state</code> 每次都扫描主库和所有目标目录；覆盖前的 <code>get_target_fingerprint</code> 会遍历整个目录算哈希；批量操作每处理一个技能就调一次命令。目标放在 iCloud、网盘或外接盘时，卡顿会很明显。</div>
+      <div><span class="k">修复建议</span>把命令改成 <code>async fn</code>，或标注 <code>#[tauri::command(async)]</code>。业务代码几乎不用动。</div>
+      <div class="cost">改动成本：小。影响：界面不再“假死”，进度和取消按钮真正可用。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">S2</span><span class="pill p1">P1</span><span class="dim">错误处理</span><h4>8 个写操作出错时没有任何反馈</h4></div>
+    <div class="kv">
+      <div><span class="k">涉及操作</span>右键菜单切换 / 新建标签、抽屉内改标签、添加目标、改标签颜色、删除标签、拖拽排序、新建标签（<code>App.tsx</code> 第 360、369、1119、1546、1576、1582、1591、1601 行）。</div>
+      <div><span class="k">后果</span>后端报错时，Promise 失败没人处理：界面不提示，用户反复点击也看不出原因。拖拽排序是先改界面再保存，失败后界面顺序和数据库不一致。</div>
+      <div><span class="k">修复建议</span>统一套一层：失败时调用已有的 <code>showError</code>；拖拽失败时恢复原顺序。可以抽一个小工具函数，避免每处重复写 try/catch。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">S3</span><span class="pill p1">P1</span><span class="dim">批量操作</span><h4>“重试失败项”永远按“应用”去重试</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span><code>App.tsx:771</code> 写死了 <code>runBatch(again, "deploy")</code>，没有记住上一次是“应用”还是“收回”。</div>
+      <div><span class="k">后果</span>批量收回时有几项失败，点“重试失败项”会把它们重新应用，结果和用户意图相反。</div>
+      <div><span class="k">修复建议</span>批量结果里保存本次的模式（deploy / withdraw），重试时沿用；按钮文案也写成“重试收回 3 项”。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">S4</span><span class="pill p1">P1</span><span class="dim">数据一致性</span><h4>每次刷新都清空重写部署快照表，而且没有事务</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span><code>storage.rs:653</code> 的 <code>persist_deployments</code> 先 <code>DELETE FROM deployments</code>，再逐行插入，没有包在事务里。它由 <code>load_app_state</code> 调用，也就是说每次查看状态都会写数据库。</div>
+      <div><span class="k">后果</span>这张表除了测试之外没有任何地方读取，却让每次刷新都多出一次全表写入。中途出错会留下半张表。dsh 插件也会读写同一个 <code>app.db</code>，读操作附带写操作会增加锁冲突的概率。</div>
+      <div><span class="k">修复建议</span>两种选择。产品上暂时不需要部署历史：直接停止写入（推荐，符合“不做操作日志”的约束）。需要保留：放进事务，并且只在应用 / 收回之后写，不在读取时写。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+</section>
+
+<section id="interaction">
+  <h2>交互</h2>
+  <p class="sub">整体流程清晰，确认框写清了影响范围，Esc 关闭和焦点循环也都做了。问题集中在键盘可达性和几处状态反馈。</p>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">I1</span><span class="pill p1">P1</span><span class="dim">可访问性</span><h4>技能卡片不能用键盘打开</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span>卡片是一个只绑了 onClick 的 <code>div</code>，没有 tabindex 和键盘事件（<code>App.tsx:932</code>）。实测从搜索框连按 4 次 Tab，焦点停在标签筛选上；卡片本身拿不到焦点。</div>
+      <div><span class="k">影响</span>DESIGN.md 要求“弹窗和抽屉必须可键盘关闭”，但入口本身键盘到不了。在“全部技能”视角下，只能 Tab 到卡片里的“详情”按钮，而它在鼠标没悬停时是透明的。</div>
+      <div><span class="k">修复建议</span>卡片加 <code>tabIndex={0}</code>、<code>role="button"</code>、Enter / 空格打开详情，并加上 focus-visible 外框。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">I2</span><span class="pill p1">P1</span><span class="dim">状态同步</span><h4>在 App 外改了文件，界面不会更新</h4></div>
+    <div class="kv">
+      <div><span class="k">现状</span>界面只在启动和自己执行写操作后刷新。用户在 Finder 里删了软链接、在终端里装了新技能，或者 dsh 插件改了标签，回到影子时看到的还是旧状态。全局只有“状态暂未核对”横幅里有一个“重新核对”按钮，平时看不到。</div>
+      <div><span class="k">影响</span>用户会基于过期状态去应用或收回，结果落入“冲突”或“未改动”，然后困惑。dsh 插件 README 已经把这条写进了“已知边界”。</div>
+      <div><span class="k">修复建议</span>窗口重新获得焦点时静默刷新一次；顶栏加一个刷新按钮，并支持 ⌘R。不需要做文件监听。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">I3</span><span class="pill p2">P2</span><span class="dim">防重复点击</span><h4>卡片按钮的“处理中”禁用状态永远不会生效</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span>按钮检查的键是 <code>deploy:${skill.id}</code>（<code>App.tsx:988</code>），实际写入的键是 <code>deploy:${skillId}:${targetId}</code>（第 380 行），两者永远对不上。另外 busy 状态存在 ref 里，变化不会触发重新渲染。</div>
+      <div><span class="k">影响</span>重复执行已经被 ref 锁挡住了，不会出事；但按钮在处理中看起来仍可点击，没有视觉反馈。</div>
+      <div><span class="k">修复建议</span>用一个 state 集合记录处理中的技能，统一键名格式。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">I4</span><span class="pill p2">P2</span><span class="dim">反馈色调</span><h4>批量操作全部成功时，结果面板也是红色错误样式</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span>批量结果复用了 <code>.inline-error-bar</code>（红底，<code>styles.css:2113</code>），不论成功与否。</div>
+      <div><span class="k">修复建议</span>全部成功时只弹绿色提示，不显示面板；有失败时才用持久面板，并在标题里写清“3 成功，2 失败”。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">I5</span><span class="pill p2">P2</span><span class="dim">筛选逻辑</span><h4>点击标签栏的“全部”会顺带清掉状态筛选</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span><code>App.tsx:629</code> 的 onClick 同时执行 <code>setActiveTag(null)</code> 和 <code>setStatusFilter(null)</code>。标签和状态是两行独立的筛选，用户只想取消标签时，“只看有问题”的状态也被一起清除了。</div>
+      <div><span class="k">修复建议</span>“全部”只清标签；状态行补一个“全部状态”选项，并让两行之间有清晰的分组标题。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+</section>
+
+<section id="visual">
+  <h2>视觉</h2>
+  <p class="sub">整体与 DESIGN.md 的“安静、可信的工作台”方向一致：暖白底、细边框、低饱和状态色，三种窗口尺寸下都没有横向溢出。问题主要在信息密度和提示层的堆叠。</p>
+
+  <div class="shots">
+    <figure>
+      <img src="assets/01-overview-1040.png" alt="1040×680 最小窗口下的全览，顶部工具栏和标签栏占据约 160 像素，首屏只露出 4 张卡片" loading="lazy">
+      <figcaption>最小窗口 1040×680：卡片区从第 161px 才开始，首屏能看到 4 张卡（共 9 张）。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/04-target-context.png" alt="选择全局目标后，出现第三行状态筛选，卡片按有问题、已应用、未应用分组，底部有批量操作条" loading="lazy">
+      <figcaption>选中目标后多出一行状态筛选，再加底部批量条，可用于卡片的纵向空间进一步缩小。</figcaption>
+    </figure>
+  </div>
+
+  <div class="issue" style="margin-top:14px">
+    <div class="issue-h"><span class="id">V1</span><span class="pill p2">P2</span><span class="dim">信息密度</span><h4>顶部区域偏高，小窗口首屏内容少</h4></div>
+    <div class="kv">
+      <div><span class="k">实测</span>三个尺寸下工具栏都是 114px 高，第一张卡片从 161px 开始。1040×680 窗口里，顶部占了约 24% 的高度，首屏可见 4/9 张卡。目标上下文里还会再多一行状态筛选和一条底部批量栏。</div>
+      <div><span class="k">建议</span>把状态筛选并入标签行的右侧（分段控件），工具栏上下内边距从 20px 收到 14px；分组标题和卡片的间距也可以收紧一档。目标是在最小窗口下首屏能看到 6 张卡（两整行）。</div>
+      <div class="cost">改动成本：中（需要同步更新 DESIGN.md）。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">V2</span><span class="pill p2">P2</span><span class="dim">细节</span><h4>目标下拉的箭头是旋转的“‹”字符，展开时不变化</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span><code>App.tsx:583</code> 用文本字符 <code>‹</code> 加 <code>rotate(-90deg)</code> 模拟下拉箭头；<code>styles.css</code> 里没有展开态样式。字符在不同字体下粗细和基线都不一致。</div>
+      <div><span class="k">建议</span>换成和设置图标同一套线性 SVG 的 chevron，展开时旋转 180°。触发按钮补上 <code>aria-expanded</code>，下拉项改成 button 元素，以便键盘和读屏软件识别。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">V3</span><span class="pill p2">P2</span><span class="dim">提示层</span><h4>错误条、批量结果和提示都钉在同一位置，会互相盖住</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span><code>.toast</code> 和 <code>.inline-error-bar</code> 都是 <code>position:fixed; top:60px</code> 水平居中（<code>styles.css:1554 / 2113</code>）。批量结果面板和普通错误条用的是同一个样式，同时出现时会完全重叠，正好盖住目标下拉和搜索框。</div>
+      <div><span class="k">建议</span>持久类信息（错误、批量结果）放进内容区顶部的文档流，和“状态暂未核对”横幅排在一起；只有短暂的成功提示浮在上层。这样多条信息会自然向下排列，不会互相遮挡。</div>
+      <div class="cost">改动成本：中。</div>
+    </div>
+  </div>
+</section>
+
+<section id="feature">
+  <h2>功能</h2>
+  <p class="sub">导入预览勾选、冲突需显式确认、覆盖前比对内容指纹，这些安全机制在同类工具里属于少见的扎实。下面几条是“规则对了，但用户看不到或用不到”。</p>
+
+  <figure style="margin-bottom:14px">
+    <img src="assets/07-drawer.png" alt="详情抽屉中，产品调研在三个目标下都显示状态异常和需手动处理，不可一键覆盖" loading="lazy" style="max-width:760px">
+    <figcaption>详情抽屉：每一行只显示“需手动处理，不可一键覆盖”。同一技能在卡片上却有“覆盖”按钮（见 F2）。模拟数据中 issue 为空，所以原因显示为“状态异常”。</figcaption>
+  </figure>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">F1</span><span class="pill p1">P1</span><span class="dim">目标管理</span><h4>项目文件夹被移动或删除后，界面没有任何提示</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span>后端为每个目标计算了 <code>pathExists / targetExists / rootExists</code>，前端 <code>transform.ts</code> 也接收了，但 <code>App.tsx</code> 中一次都没有使用。</div>
+      <div><span class="k">后果</span>用户改名或移动了项目文件夹，下拉菜单和设置里仍然正常显示这个目标；直到点“应用”才收到“目标路径不存在”的报错。DESIGN.md 要求“项目根路径不存在时阻断应用并引导到设置处理”，这里只做了一半。</div>
+      <div><span class="k">建议</span>下拉和设置里给失效目标加灰色“路径不存在”标记；选中失效目标时，用横幅说明原因并提供“在设置中移除”入口，批量操作按钮置灰。</div>
+      <div class="cost">改动成本：中。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">F2</span><span class="pill p1">P1</span><span class="dim">覆盖规则</span><h4>同一个“有问题”的技能，卡片能覆盖、抽屉不能覆盖</h4></div>
+    <div class="kv">
+      <div><span class="k">证据</span>抽屉用正则 <code>/冲突|失效|broken|conflict/</code> 匹配问题描述来决定是否显示覆盖按钮（<code>App.tsx:1239</code>）。但后端实际返回的文案是“目标位置已有同名内容”“软链接目标不存在”“目标位置已有指向别处的软链接”等（<code>storage.rs:1020-1034</code>），没有一个包含这些关键词。结果是抽屉里永远不出现覆盖按钮。</div>
+      <div><span class="k">反过来</span>卡片上对所有“有问题”的技能都显示覆盖按钮（<code>App.tsx:994</code>），包括“目标技能目录不存在”“无法读取”这类本不该一键覆盖的情况（后端会拒绝，但用户先得走完一次确认流程）。</div>
+      <div><span class="k">建议</span>不要靠匹配中文文案做判断。后端已经有 7 种细分状态（Conflict / Broken / PathMissing 等），直接把细分状态或一个 <code>can_overwrite</code> 布尔值传给前端，卡片和抽屉共用同一条规则。界面仍只展示 3 种状态，符合“不在 UI 展示 7 种细分状态”的约束。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">F3</span><span class="pill p2">P2</span><span class="dim">小功能</span><h4>搜索不匹配标签；重复添加同一目标会静默覆盖</h4></div>
+    <div class="kv">
+      <div><span class="k">搜索</span><code>filterSkills</code> 只匹配名称和描述（<code>viewModel.ts:70-74</code>）。输入“飞书”找不到带“飞书”标签但描述里没写这两个字的技能。建议把标签名纳入搜索。</div>
+      <div><span class="k">添加目标</span>后端用 <code>INSERT OR REPLACE</code>（<code>storage.rs:688</code>）。重复添加同一路径不报错也不提示，用户不确定是否加成功。建议提示“该目标已存在”并在列表中高亮它。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+</section>
+
+<section id="engineering">
+  <h2>工程</h2>
+  <p class="sub">这部分不直接影响用户，但决定了后续修改会不会越改越乱。</p>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">E1</span><span class="pill p2">P2</span><span class="dim">版本管理</span><h4>大量改动没有提交，还残留恢复文件</h4></div>
+    <div class="kv">
+      <div><span class="k">现状</span>15 个已跟踪文件有 +3811 / -729 行未提交改动，另有 8 个新文件未纳入版本管理（测试、viewModel、transform 等）。最后一次提交是 10 月 10 日。根目录有 <code>.recovered-from-trajectory/</code> 恢复文件夹，dsh 插件目录也未提交。</div>
+      <div><span class="k">风险</span>一次误操作就可能丢失这几周的工作；也没法用 git 回退某一次具体修改。</div>
+      <div><span class="k">建议</span>先按主题分几次提交（后端安全规则 / 前端视图模型 / 测试 / 文档），确认恢复文件已合入后再删除。这一步需要你决定提交粒度，我没有动。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">E2</span><span class="pill p2">P2</span><span class="dim">文档</span><h4>项目文档与代码对不上</h4></div>
+    <div class="kv">
+      <div><span class="k">AGENTS.md</span>命令表缺少已注册的 <code>get_skill_content</code>、<code>get_target_fingerprint</code>；技术栈写 Tauri 2.10.0，锁文件里实际是 2.11.2；“验证清单”没有提到已存在的 <code>npm test</code> 和 <code>cargo test</code>。</div>
+      <div><span class="k">DESIGN.md</span>第 21 行写“目标状态筛选尚未实现”，第 68 行写“设置抽屉 Esc 关闭仍待补齐”，实际两者都已实现。</div>
+      <div><span class="k">为什么重要</span>项目规则要求“修改行为前先更新文档”，AI 协作时会以文档为准，过期的文档会把后续修改带偏。</div>
+      <div class="cost">改动成本：小。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-h"><span class="id">E3</span><span class="pill p2">P2</span><span class="dim">代码结构</span><h4>App.tsx 单文件 2095 行，重复和死代码在累积</h4></div>
+    <div class="kv">
+      <div><span class="k">重复</span>“应用 / 覆盖”逻辑写了两份（卡片第 378 行、抽屉第 1124 行），P0-2 和 F2 正是两份逻辑跑偏造成的。焦点循环逻辑写了三份（抽屉、导入弹窗、确认框）。</div>
+      <div><span class="k">死代码</span>未使用的状态 <code>statusDropdownOpen</code>、导入后未使用的 <code>reorderTag</code>、viewModel 里未被调用的 <code>summarizeBatch</code>，以及对应的 <code>.status-dropdown</code>、<code>.card-stat-text</code> 样式。Rust 端 clippy 报告 2 条警告。</div>
+      <div><span class="k">建议</span>不必大拆。先把“应用 / 收回 / 覆盖”抽成一个共用函数，把焦点循环抽成一个小 hook，就能消除最容易出错的两处重复。“单文件”约定可以保留。</div>
+      <div class="cost">改动成本：中。</div>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap">
+  <h2>建议修复路线</h2>
+  <p class="sub">按“先止损、再建立信任、最后打磨”分三批。每一批都可以单独发一个测试版。</p>
+
+  <div class="diagram panel" role="img" aria-label="三批修复的优先级与成本定位图：横轴为改动成本，纵轴为用户影响">
+    <svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg">
+      <rect x="70" y="20" width="860" height="260" fill="#FBFBFA" stroke="#EAEAEA"/>
+      <line x1="500" y1="20" x2="500" y2="280" stroke="#EAEAEA" stroke-dasharray="4 4"/>
+      <line x1="70" y1="150" x2="930" y2="150" stroke="#EAEAEA" stroke-dasharray="4 4"/>
+      <text x="80" y="40" font-size="13" fill="#346538" font-weight="600">影响大 · 成本小 → 先做</text>
+      <text x="920" y="40" font-size="13" fill="#787774" text-anchor="end">影响大 · 成本中</text>
+      <text x="80" y="272" font-size="13" fill="#787774">影响小 · 成本小 → 顺手做</text>
+      <text x="920" y="272" font-size="13" fill="#787774" text-anchor="end">影响小 · 成本中 → 排期</text>
+      <text x="500" y="306" font-size="13" fill="#787774" text-anchor="middle">改动成本 →</text>
+      <text x="30" y="150" font-size="13" fill="#787774" text-anchor="middle" transform="rotate(-90 30 150)">用户影响 →</text>
+      <g font-size="13" font-weight="600">
+        <circle cx="130" cy="66" r="17" fill="#FDECEC" stroke="#9F2F2D"/><text x="130" y="71" text-anchor="middle" fill="#9F2F2D">P0-1</text>
+        <circle cx="180" cy="80" r="17" fill="#FDECEC" stroke="#9F2F2D"/><text x="180" y="85" text-anchor="middle" fill="#9F2F2D">P0-2</text>
+        <circle cx="240" cy="70" r="17" fill="#FBF1E2" stroke="#9A5B13"/><text x="240" y="75" text-anchor="middle" fill="#9A5B13">S1</text>
+        <circle cx="300" cy="96" r="17" fill="#FBF1E2" stroke="#9A5B13"/><text x="300" y="101" text-anchor="middle" fill="#9A5B13">S3</text>
+        <circle cx="350" cy="76" r="17" fill="#FBF1E2" stroke="#9A5B13"/><text x="350" y="81" text-anchor="middle" fill="#9A5B13">F2</text>
+        <circle cx="400" cy="110" r="17" fill="#FBF1E2" stroke="#9A5B13"/><text x="400" y="115" text-anchor="middle" fill="#9A5B13">S2</text>
+        <circle cx="270" cy="128" r="17" fill="#FBF1E2" stroke="#9A5B13"/><text x="270" y="133" text-anchor="middle" fill="#9A5B13">I2</text>
+        <circle cx="440" cy="132" r="17" fill="#FBF1E2" stroke="#9A5B13"/><text x="440" y="137" text-anchor="middle" fill="#9A5B13">I1</text>
+        <circle cx="200" cy="130" r="17" fill="#FBF1E2" stroke="#9A5B13"/><text x="200" y="135" text-anchor="middle" fill="#9A5B13">S4</text>
+        <circle cx="600" cy="92" r="17" fill="#FBF1E2" stroke="#9A5B13"/><text x="600" y="97" text-anchor="middle" fill="#9A5B13">F1</text>
+        <circle cx="140" cy="190" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="140" y="195" text-anchor="middle" fill="#3B5F7A">I3</text>
+        <circle cx="200" cy="210" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="200" y="215" text-anchor="middle" fill="#3B5F7A">I4</text>
+        <circle cx="260" cy="194" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="260" y="199" text-anchor="middle" fill="#3B5F7A">I5</text>
+        <circle cx="320" cy="222" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="320" y="227" text-anchor="middle" fill="#3B5F7A">V2</text>
+        <circle cx="380" cy="198" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="380" y="203" text-anchor="middle" fill="#3B5F7A">F3</text>
+        <circle cx="440" cy="226" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="440" y="231" text-anchor="middle" fill="#3B5F7A">E1</text>
+        <circle cx="160" cy="246" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="160" y="251" text-anchor="middle" fill="#3B5F7A">E2</text>
+        <circle cx="620" cy="190" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="620" y="195" text-anchor="middle" fill="#3B5F7A">V1</text>
+        <circle cx="700" cy="214" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="700" y="219" text-anchor="middle" fill="#3B5F7A">V3</text>
+        <circle cx="780" cy="236" r="17" fill="#EAF1F6" stroke="#3B5F7A"/><text x="780" y="241" text-anchor="middle" fill="#3B5F7A">E3</text>
+      </g>
+      <g font-size="12" fill="#787774">
+        <circle cx="620" cy="318" r="6" fill="#FDECEC" stroke="#9F2F2D"/><text x="632" y="322">P0</text>
+        <circle cx="680" cy="318" r="6" fill="#FBF1E2" stroke="#9A5B13"/><text x="692" y="322">P1</text>
+        <circle cx="740" cy="318" r="6" fill="#EAF1F6" stroke="#3B5F7A"/><text x="752" y="322">P2</text>
+        <text x="790" y="322">位置为相对估计（示意）</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="road" style="margin-top:14px">
+    <div class="stage">
+      <div class="t"><b>第一批 · 止损</b><span class="pill p0">约 1 天</span></div>
+      <ul>
+        <li>P0-1 删除改用应用内确认框</li>
+        <li>P0-2 抽屉收回按报告提示</li>
+        <li>S3 重试沿用原操作类型</li>
+        <li>F2 覆盖规则改用后端状态判断</li>
+        <li>补测试：删除取消、收回失败、收回重试</li>
+      </ul>
+      <p class="note">完成标准：任何危险操作在“取消”时零副作用；任何失败都不出现绿色提示。</p>
+    </div>
+    <div class="stage">
+      <div class="t"><b>第二批 · 建立信任</b><span class="pill p1">约 2 天</span></div>
+      <ul>
+        <li>S1 命令改为异步，消除卡顿</li>
+        <li>S2 所有写操作统一失败兜底</li>
+        <li>S4 停止在读取时写部署表</li>
+        <li>I2 焦点回到窗口时刷新 + 刷新按钮</li>
+        <li>F1 失效目标的标记与引导</li>
+        <li>I1 卡片可用键盘打开</li>
+      </ul>
+      <p class="note">完成标准：在网盘目录下操作界面不假死；在 Finder 改完文件后切回 App 即可看到最新状态。</p>
+    </div>
+    <div class="stage">
+      <div class="t"><b>第三批 · 打磨</b><span class="pill p2">约 2–3 天</span></div>
+      <ul>
+        <li>V1 / V3 压缩顶部高度，提示层改为文档流</li>
+        <li>V2 / I3 / I4 / I5 / F3 小细节</li>
+        <li>E3 合并重复的应用逻辑与焦点循环</li>
+        <li>E1 / E2 分批提交、同步文档</li>
+      </ul>
+      <p class="note">建议 E1 提前：在动手修第一批之前，先把现有改动提交一次，方便回退。</p>
+    </div>
+  </div>
+</section>
+
+<section id="method">
+  <h2>验证范围与局限</h2>
+  <p class="sub">以下结论基于这些检查。没有覆盖到的部分如实列出。</p>
+  <div class="tbl panel" style="padding:6px 10px">
+    <table>
+      <colgroup><col style="width:24%"><col style="width:46%"><col style="width:30%"></colgroup>
+      <thead><tr><th>检查项</th><th>方法</th><th>结果</th></tr></thead>
+      <tbody>
+        <tr><td>前端构建</td><td><code>npm run build</code>（类型检查 + 打包）</td><td><span class="pill ok">通过</span> JS 401KB / gzip 123KB</td></tr>
+        <tr><td>前端测试</td><td><code>npm test</code>（vitest）+ <code>test:adapter</code></td><td><span class="pill ok">28 + 7 通过</span></td></tr>
+        <tr><td>后端测试</td><td><code>cargo test</code></td><td><span class="pill ok">30 通过</span></td></tr>
+        <tr><td>后端静态检查</td><td><code>cargo clippy --all-targets</code></td><td><span class="pill p2">2 条警告</span> 无错误</td></tr>
+        <tr><td>界面走查</td><td>模拟数据下用无头浏览器截图 14 个状态，覆盖 1040×680 / 1280×820 / 1440×900</td><td>三种尺寸均无横向溢出</td></tr>
+        <tr><td>P0-1 复现</td><td>按 dialog 插件 2.7.1 源码注入异步 <code>confirm</code> 并返回“取消”</td><td><span class="pill p0">复现成功</span></td></tr>
+        <tr><td>依赖行为核对</td><td>直接阅读本机 cargo 缓存中的 tauri 2.11.2、tauri-plugin-dialog 2.7.1、wry 0.55.1 源码</td><td>结论均有源码出处</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="plain note" style="margin-top:12px">
+    <li><b>未在真实打包 App 中操作：</b>按项目规则，写操作验收不应在真实技能库上进行，本次没有打开 <code>影子.app</code> 做删除测试。P0-1 是按插件源码在浏览器中等价复现的，建议修复后在隔离测试 App（YINGZI_TEST_HOME）中再确认一次。</li>
+    <li><b>S1 卡顿程度未量化：</b>依据是 Tauri 官方文档和代码结构，没有在大目录或网盘目录上实测耗时。</li>
+    <li><b>只读访问真实数据：</b>上一轮审查只统计了数量（主库 24 个技能、全局 1 个受管链接），未读取任何技能内容，也没有改动 <code>~/.skills-manager</code> 和 <code>~/.agents/skills</code>。</li>
+    <li><b>未覆盖：</b>dsh-plugin-yingzi 插件本身的代码质量、Windows 平台行为、ZIP 导入的大文件性能。</li>
+  </ul>
+</section>
+
+<footer>
+  影子项目审查报告 · 2026-10-13 · 截图均来自模拟数据环境，不包含真实技能内容。
+</footer>
+
+</div>
+</body>
+</html>
