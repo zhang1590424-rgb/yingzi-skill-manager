@@ -11,3 +11,7 @@ src-tauri/gen/
 .env
 .env.*
 .superpowers/
+# 本地 AI 工具恢复文件与报告自检截图
+.recovered-from-trajectory/
+review/_shots/
+review/_backup/

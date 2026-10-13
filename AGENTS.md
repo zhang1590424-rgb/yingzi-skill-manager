@@ -19,13 +19,14 @@
 
 | 层 | 技术 | 版本 |
 |----|------|------|
-| 框架 | Tauri 2 | 2.10.0 |
+| 框架 | Tauri 2 | 2.11（见 `src-tauri/Cargo.lock`） |
 | 前端 | React + TypeScript | React 19.2, TS 5.9 |
 | 构建 | Vite | 7.3 |
 | 后端 | Rust (edition 2021) | rustc 1.77.2+ |
 | 数据库 | SQLite (rusqlite bundled) | 0.31 |
-| 对话框 | tauri-plugin-dialog | 2.6.0 |
+| 对话框 | tauri-plugin-dialog | 2.7（只用 open；不用 confirm） |
 | Markdown | react-markdown + remark-gfm | 10.1 / 4.0 |
+| 测试 | vitest + Testing Library；cargo test | 3.2 |
 
 Crate name: `skill-hub`，Tauri app identifier: `local.skill-hub`。
 
@@ -39,12 +40,16 @@ Crate name: `skill-hub`，Tauri app identifier: `local.skill-hub`。
 ├── README.md              # 项目简介与使用说明
 ├── scripts/
 │   ├── copy-macos-app.mjs   # 打包后复制 .app 到根目录
-│   └── prepare-github-release.mjs  # 生成 DMG + release 目录
+│   ├── prepare-github-release.mjs  # 生成 DMG + release 目录
+│   └── test-adapter.test.ts # transform 契约测试（node --test）
 ├── src/                   # 前端源码
 │   ├── App.tsx            # 全部 UI 组件（单文件）
 │   ├── api.ts             # Tauri invoke 封装 + mock 数据
+│   ├── transform.ts       # 后端 RawAppState → 前端 AppState
+│   ├── viewModel.ts       # 纯逻辑：筛选 / 分组 / 报告解读 / 批量范围
 │   ├── types.ts           # TypeScript 类型定义
 │   ├── styles.css         # 全局样式
+│   ├── test/              # vitest setup 与 fixtures
 │   └── main.tsx           # React 入口
 ├── src-tauri/             # Rust 后端
 │   └── src/
@@ -74,11 +79,13 @@ Crate name: `skill-hub`，Tauri app identifier: `local.skill-hub`。
 影子
 ├── 单页技能工作台
 │   ├── 顶部工具栏
-│   │   ├── 目标下拉（全部技能 / 某个 Target）
-│   │   ├── 搜索框
+│   │   ├── 目标下拉（全部技能 / 某个 Target；失效目标标注「路径不存在」）
+│   │   ├── 搜索框（匹配名称 / 描述 / 标签）
+│   │   ├── 刷新按钮（⌘R；窗口获得焦点时也会自动刷新）
 │   │   ├── 导入按钮（+）
 │   │   └── 设置按钮（齿轮）
-│   ├── 标签筛选栏（全部 / 各标签 / 无标签）
+│   ├── 筛选栏（左：全部 / 各标签 / 无标签；右：选择目标后的状态分段控件）
+│   ├── 提示区（状态横幅、错误条、批量结果，文档流纵向堆叠）
 │   ├── 技能网格（3 列卡片，按标签或状态分组）
 │   ├── 选中卡片 → 右侧详情抽屉（340px）
 │   └── 选择目标后 → 底部 sticky 批量操作栏
@@ -87,7 +94,7 @@ Crate name: `skill-hub`，Tauri app identifier: `local.skill-hub`。
 │   ├── 目标目录管理
 │   └── 标签管理（颜色 / 重命名 / 排序 / 删除 / 新建）
 ├── 导入弹窗（居中模态）
-└── 确认对话框（覆盖 / 批量操作）
+└── 确认对话框（删除 / 覆盖 / 批量操作）
 ```
 
 ## 五、核心概念
@@ -108,11 +115,11 @@ Crate name: `skill-hub`，Tauri app identifier: `local.skill-hub`。
 |--------|---------|------|
 | `Target` | id, name, path, is_default, path_exists | 目标目录 |
 | `Skill` | id, name, display_name, description, path, tags, enabled_count, issue_count, content_preview | 主库技能 |
-| `TargetStatus` | id, skill_id, skill_name, display_name, description, target_id, target_name, status, target_path, link_target, issue, root_exists | 某技能在某目标的状态 |
+| `TargetStatus` | id, skill_id, skill_name, display_name, description, target_id, target_name, status, target_path, link_target, issue, root_exists, can_overwrite | 某技能在某目标的状态；`can_overwrite` 仅冲突 / 失效为 true |
 | `TargetWorkspace` | target_id, target_name, target_path, skills_path, target_exists, root_exists, statuses | 一个目标的完整工作区快照 |
-| `AppState` | base_dir, skills_root, database_path, config_path, targets, skills, workspaces, issues | 全量应用状态 |
-| `DeployTarget` | target_id | 部署目标标识 |
-| `OperationReport` | changed, skipped, conflicts, errors | 操作结果报告 |
+| `AppState` | base_dir, skills_root, database_path, config_path, is_isolated, targets, skills, workspaces, issues | 全量应用状态 |
+| `DeployTarget` | target_id, expected | 部署目标标识；`expected` 为覆盖确认时的指纹 |
+| `OperationReport` | changed, skipped, conflicts, errors, items | 操作结果报告 |
 | `TagInfo` | name, color_index, count, sort_order | 标签元信息 |
 | `SkillStatus`（枚举） | Enabled, Disabled, Unmanaged, Conflict, Broken, PathMissing, Invalid | 后端 7 种诊断状态 |
 | `PackageSkill` | id, name, display_name, description, category, entry_prefix, exists, item_kind, member_count | 包扫描结果中的单个技能 |
@@ -142,9 +149,11 @@ CREATE TABLE tag_meta (tag TEXT PRIMARY KEY, color_index INTEGER NOT NULL DEFAUL
 
 默认全局目标 ID 固定为 `"agents"`，名称为 `"全局"`，路径为 `~/.agents/skills`。
 
+`deployments` 表只为兼容旧库保留结构，当前代码不再写入也不读取；读取状态（`get_app_state`）不产生任何数据库写入。
+
 ## 七、命令接口（Tauri commands）
 
-所有命令通过 `tauri::command` 宏注册，前端使用 `invoke()` 调用。
+所有命令通过 `#[tauri::command(async)]` 注册（在后台线程执行，避免文件扫描阻塞界面），前端使用 `invoke()` 调用。新增命令必须同样带 `async` 属性。
 
 ### 状态
 
@@ -158,15 +167,17 @@ CREATE TABLE tag_meta (tag TEXT PRIMARY KEY, color_index INTEGER NOT NULL DEFAUL
 |------|------|------|------|
 | `import_skill` | source_path: String | `AppState` | 导入单个文件夹或 .zip |
 | `delete_skill` | skill_id: String | `AppState` | 删除主库技能（需先收回所有启用位置） |
-| `deploy_skill` | skill_id: String, targets: Vec\<DeployTarget\>, overwrite: bool | `OperationReport` | 应用技能到指定目标 |
+| `deploy_skill` | skill_id: String, targets: Vec\<DeployTarget\>, overwrite: bool | `OperationReport` | 应用技能到指定目标；覆盖需带 `expected` 指纹 |
 | `withdraw_skill` | skill_id: String, targets: Vec\<DeployTarget\> | `OperationReport` | 从目标收回技能 |
 | `set_skill_tags` | skill_id: String, tags: Vec\<String\> | `AppState` | 设置技能标签（全量替换） |
+| `get_skill_content` | skill_id: String | `SkillContent` | 读取 SKILL.md 全文（去 frontmatter / telemetry） |
+| `get_target_fingerprint` | skill_id: String, target_id: String | `PathFingerprint` | 覆盖确认前读取目标位置指纹 |
 
 ### 目标
 
 | 命令 | 参数 | 返回 | 说明 |
 |------|------|------|------|
-| `add_target` | path: String | `AppState` | 添加目标目录 |
+| `add_target` | path: String | `AppState` | 添加目标目录（同一路径已存在时报错，不覆盖） |
 | `remove_target` | target_id: String | `AppState` | 移除目标（默认目标不可移除） |
 
 ### 标签
@@ -200,9 +211,13 @@ CREATE TABLE tag_meta (tag TEXT PRIMARY KEY, color_index INTEGER NOT NULL DEFAUL
 ### 8.1 状态管理
 
 - 无第三方状态库，全部使用 React `useState` + `useCallback`。
-- 核心状态：`AppState` 从后端 `get_app_state` 获取，存于顶层 `App` 组件。
+- 核心状态：`AppState` 从后端 `get_app_state` 获取，存于顶层 `App` 组件。窗口重新获得焦点、点击刷新或 ⌘R 时重新获取。
 - 大部分写操作返回新的 `AppState`，前端直接 `setState` 替换。
 - `api.ts` 中有 `isTauriRuntime()` 检测，非 Tauri 环境返回 mock 数据（方便浏览器开发调试）。
+- 纯逻辑（筛选、分组、报告解读、批量范围）放在 `src/viewModel.ts`，有单测；`App.tsx` 只做渲染和调用。
+- 单项应用 / 收回 / 覆盖统一走 `SkillView` 里的 `runDeploy` / `runWithdraw`，卡片和详情抽屉共用，不要再复制一份。
+- 危险操作确认只用 `ConfirmDialog`。**禁止使用 `window.confirm`**：dialog 插件把它替换成了异步函数，同步判断会直接放行。
+- 弹窗 / 抽屉的焦点管理统一用 `useFocusTrap` hook（打开聚焦、Tab 循环、关闭还焦）。
 
 ### 8.2 组件层次
 
@@ -226,10 +241,11 @@ App
 |------|------|------|
 | 全览 | 默认 | 加载 AppState → 3 列卡片按标签分组 |
 | 目标上下文 | 选择目标 | 卡片按状态分组，显示状态 badge，hover 出现应用/收回按钮 |
-| 应用技能 | 卡片 hover / 详情抽屉行 | invoke deploy_skill → refresh → toast |
-| 批量应用 | 底部栏按钮 | 确认弹窗 → 逐个 deploy → refresh → toast |
+| 应用技能 | 卡片 hover / 键盘聚焦 / 详情抽屉行 | runDeploy → invoke deploy_skill → refresh → 按 OperationReport 提示 |
+| 批量应用 | 底部栏按钮 | 确认弹窗 → 逐个 deploy → refresh → 全成功 toast / 部分失败结果面板（重试沿用原操作） |
 | 导入 | + 按钮 | 模态 → 系统文件对话框 → import_skill / scanPackage+importFromPackage → 刷新 + 高亮新技能 |
-| 删除 | 详情抽屉垃圾桶 | confirm → delete_skill → 退出动画 → setState |
+| 删除 | 详情抽屉垃圾桶 | ConfirmDialog → delete_skill → 退出动画 → setState |
+| 外部变更 | 窗口获得焦点 / 刷新按钮 / ⌘R | 静默 get_app_state → setState |
 
 ## 九、Skill 文件格式
 
@@ -258,7 +274,7 @@ tags: [标签1, 标签2]
 - **全局目标**：默认 `~/.agents/skills`，不可移除。
 - **项目目标**：落在 `<项目根>/.agents/skills`（`compute_skills_path` 智能判断）。
 - **分发方式**：`symlink`（Unix）/ `symlink_dir`（Windows）。
-- **冲突策略**：overwrite=true 时主库优先覆盖目标同名内容。
+- **冲突策略**：overwrite=true 时主库优先覆盖目标同名内容；仅 `can_overwrite` 为 true（冲突 / 失效）的位置提供覆盖入口。
 - **删除保护**：技能有启用位置时不允许删除，需先全部收回。
 - **导入来源**：本地文件夹（含 SKILL.md）或 .zip 压缩包（支持单技能和多技能包）。
 - **ZIP 安全**：检查路径遍历攻击、过滤 `__MACOSX` 和 `.DS_Store`。
@@ -273,7 +289,7 @@ tags: [标签1, 标签2]
 - 标签调色盘：16 色预设（见 `App.tsx` 中 `TAG_PALETTE` 常量）
 - 窗口：默认 1280×820，最小 1040×680
 - 卡片：`border-radius: 8px`，`padding: 16px`，hover shadow `0 2px 8px rgba(0,0,0,0.04)`
-- 动效：staggered fadeInUp（delay 封顶 8×50ms），抽屉 translateX 300ms ease-out
+- 动效：不做整网格入场动画；仅新导入高亮和删除退出动画；抽屉 translateX 300ms ease-out
 
 ## 十二、工作原则
 
@@ -302,8 +318,13 @@ tags: [标签1, 标签2]
 
 ```bash
 npm run dev                 # 前端开发服务器 (localhost:1420)
-npm run build               # 仅前端构建
-cargo check --manifest-path src-tauri/Cargo.toml  # Rust 类型检查
+npm run build               # 仅前端构建（含 tsc 类型检查）
+npm test                    # 前端单测 + 交互测试（vitest，jsdom）
+npm run test:adapter        # transform 适配层契约测试（node --test）
+npx vitest run -t "关键词"   # 只跑名称匹配的前端测试
+cargo test --manifest-path src-tauri/Cargo.toml             # 后端单测
+cargo test --manifest-path src-tauri/Cargo.toml 测试名       # 只跑单个后端测试
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets  # 后端静态检查，保持 0 警告
 npm run tauri:dev           # 完整开发模式（Rust + 前端 hot reload）
 npm run tauri:build         # 完整打包（app + 复制到根目录）
 npm run tauri:build:test-dmg # 打包 + 生成 DMG + release 目录
@@ -321,9 +342,11 @@ release/yingzi_*.dmg         # GitHub Release 用 DMG
 
 每次代码改动后必须验证：
 
+- [ ] `npm test`、`npm run test:adapter`、`cargo test`、`cargo clippy` 全部通过
 - [ ] `npm run tauri:build` 成功，`影子.app` 同步到根目录
 - [ ] 启动应用，技能网格正常加载
-- [ ] 选中卡片 → 详情抽屉打开/关闭流畅
+- [ ] 选中卡片 → 详情抽屉打开/关闭流畅；键盘 Tab 到卡片按 Enter 可打开
+- [ ] 删除技能：确认框点「先不操作」后技能仍在（在隔离 test.app 中验证）
 - [ ] 目标下拉切换 → 卡片状态更新 → 行内应用/收回正常
 - [ ] 底部批量操作只作用于筛选结果
 - [ ] 搜索和标签筛选即时响应
@@ -354,3 +377,14 @@ release/yingzi_*.dmg         # GitHub Release 用 DMG
 - 后端状态通过 `get_app_state` 一次性获取全量，不做增量更新。
 - 前端 `api.ts` 对后端返回的 `RawAppState` 做转换（展平 workspace → targetStatuses Map）。
 - 数据库只存标签和目标配置，技能列表和状态通过实时扫描文件系统获得。
+
+## 十六、隔离测试（YINGZI_TEST_HOME）
+
+为原生 GUI 写流程验收不污染用户真实数据，后端提供 opt-in 隔离开关：
+
+- **环境变量 `YINGZI_TEST_HOME`**：设置后，后端把运行时数据根从 `~/.skills-manager` 改到 `$YINGZI_TEST_HOME/.skills-manager`，默认全局目标从 `~/.agents/skills` 改到 `$YINGZI_TEST_HOME/.agents/skills`。目录已存在时必须包含标记文件 `.yingzi-test-root`，否则拒绝启动；目录不存在时自动创建并写入标记。
+- **默认行为不变**：未设置该变量时，所有路径与生产一致；不影响普通 `npm run tauri:dev` / 正式 app。
+- **隔离 test.app**：复制正式 `.app` 为独立 bundle（如 `local.skill-hub.test`），在其 `Contents/Info.plist` 的 `LSEnvironment` 中注入 `YINGZI_TEST_HOME` 指向强约束专用测试目录。用 Mac CU 打开该 `.app`，写入全部落在 test-home。
+- **防逃逸**：后端 `root_canonicalize` + `starts_with` 校验 test-home 本身不能软链指向真实库；ZIP 导入走 `is_safe_relative_path` 防路径遍历。
+- **验收后对比**：记录 `~/.skills-manager` 与 `~/.agents/skills` 的 mtime / 条目数基线，验收后用非 GUI 工具 stat 对比确认未被改；不要读用户隐私内容。
+- **禁止**：不要在真实用户数据目录上做写流程验收；不要 shell `open` 正式 app 当验收；不要把隔离测试当生产数据。

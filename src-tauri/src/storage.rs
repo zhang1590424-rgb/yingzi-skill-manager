@@ -13,7 +13,12 @@ pub struct Store {
     pub skills_root: PathBuf,
     pub database_path: PathBuf,
     pub config_path: PathBuf,
+    pub is_isolated: bool,
+    pub global_root: PathBuf,
 }
+
+const TEST_HOME_ENV: &str = "YINGZI_TEST_HOME";
+const TEST_ROOT_MARKER: &str = ".yingzi-test-root";
 
 /// 项目级技能统一分发到该相对目录。
 pub const PROJECT_SKILLS_RELATIVE: &str = ".agents/skills";
@@ -31,21 +36,104 @@ pub fn compute_skills_path(path: &str) -> PathBuf {
     }
 }
 
+/// 纯路径规划结果（不建库），便于单测隔离规则。
+pub(crate) struct StorePaths {
+    base_dir: PathBuf,
+    skills_root: PathBuf,
+    database_path: PathBuf,
+    config_path: PathBuf,
+    is_isolated: bool,
+    global_root: PathBuf,
+}
+
+/// 纯路径规划（不写库、不建 skills_root），可直接单测。
+fn plan_store_paths(test_home: Option<&str>, home: &Path) -> Result<StorePaths> {
+    match test_home {
+        None => {
+            let base_dir = home.join(".skills-manager");
+            Ok(StorePaths {
+                skills_root: base_dir.join("skills"),
+                database_path: base_dir.join("app.db"),
+                config_path: base_dir.join("config.json"),
+                is_isolated: false,
+                global_root: home.join(".agents").join("skills"),
+                base_dir,
+            })
+        }
+        Some(th) => {
+            let th = th.trim();
+            if th.is_empty() {
+                anyhow::bail!("{} 已设置但为空", TEST_HOME_ENV);
+            }
+            let root = PathBuf::from(th);
+            if !root.is_absolute() {
+                anyhow::bail!("{} 必须是绝对路径：{}", TEST_HOME_ENV, th);
+            }
+            let marker = root.join(TEST_ROOT_MARKER);
+            if root.exists() {
+                if !marker.exists() {
+                    anyhow::bail!(
+                        "{} 已存在但缺少标记文件 {}，拒绝启动以避免误写真实目录",
+                        TEST_HOME_ENV,
+                        TEST_ROOT_MARKER
+                    );
+                }
+            } else {
+                fs::create_dir_all(&root).context("无法创建测试根目录")?;
+                fs::write(&marker, "yingzi isolation root").context("无法写入测试根标记")?;
+            }
+            let root_canon = root
+                .canonicalize()
+                .with_context(|| format!("无法解析测试根：{}", root.display()))?;
+            let real_base = home.join(".skills-manager");
+            let real_agents = home.join(".agents");
+            for forbidden in [&real_base, &real_agents] {
+                if let Ok(f) = forbidden.canonicalize() {
+                    if root_canon == f || root_canon.starts_with(&f) {
+                        anyhow::bail!(
+                            "{} 不能位于真实技能目录内：{}",
+                            TEST_HOME_ENV,
+                            root_canon.display()
+                        );
+                    }
+                }
+            }
+            let base_dir = root_canon.join(".skills-manager");
+            Ok(StorePaths {
+                skills_root: base_dir.join("skills"),
+                database_path: base_dir.join("app.db"),
+                config_path: base_dir.join("config.json"),
+                is_isolated: true,
+                global_root: root_canon.join(".agents").join("skills"),
+                base_dir,
+            })
+        }
+    }
+}
+
+/// 读取某张表当前的列名集合；表不存在时返回空集合。
+fn table_columns(conn: &Connection, table: &str) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT name FROM pragma_table_info(?1)")?;
+    let rows = stmt.query_map([table], |row| row.get::<_, String>(0))?;
+    let mut columns = HashSet::new();
+    for row in rows {
+        columns.insert(row?);
+    }
+    Ok(columns)
+}
+
 impl Store {
     pub fn new() -> Result<Self> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
-        let base_dir = home.join(".skills-manager");
-        let skills_root = base_dir.join("skills");
-        let database_path = base_dir.join("app.db");
-        let config_path = base_dir.join("config.json");
-
-        fs::create_dir_all(&skills_root).context("无法创建技能主库目录")?;
-
+        let p = plan_store_paths(std::env::var(TEST_HOME_ENV).ok().as_deref(), &home)?;
+        fs::create_dir_all(&p.skills_root).context("无法创建技能主库目录")?;
         let store = Self {
-            base_dir,
-            skills_root,
-            database_path,
-            config_path,
+            base_dir: p.base_dir,
+            skills_root: p.skills_root,
+            database_path: p.database_path,
+            config_path: p.config_path,
+            is_isolated: p.is_isolated,
+            global_root: p.global_root,
         };
         store.ensure_config()?;
         store.ensure_database()?;
@@ -72,6 +160,30 @@ impl Store {
 
     pub fn ensure_database(&self) -> Result<()> {
         let conn = self.connection()?;
+
+        // 旧版数据库（Agent/Project 双模型时期）的 deployments 表用
+        // target_kind/agent_id/project_id 记录归属，没有 target_id。CREATE TABLE
+        // IF NOT EXISTS 无法修复这类结构漂移，而旧表遗留的无默认值 NOT NULL 列会让
+        // 后续写入必然失败，所以这里直接丢弃旧表，交给下方 schema 重建。
+        // 该表只是每次扫描后整体重写的派生快照（先 DELETE 再 INSERT），从不被读取，
+        // 因此重建不会丢失有效数据。
+        let required_columns = [
+            "id",
+            "skill_id",
+            "target_id",
+            "status",
+            "target_path",
+            "link_target",
+        ];
+        let existing_columns = table_columns(&conn, "deployments")?;
+        if !existing_columns.is_empty()
+            && !required_columns
+                .iter()
+                .all(|column| existing_columns.contains(*column))
+        {
+            conn.execute("DROP TABLE deployments", [])?;
+        }
+
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS settings (
@@ -137,7 +249,7 @@ impl Store {
             }
         }
 
-        sync_default_target(&conn)?;
+        sync_default_target(&conn, &self.global_root)?;
 
         Ok(())
     }
@@ -161,14 +273,27 @@ impl Store {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut db_tags: HashMap<String, Vec<String>> = HashMap::new();
-        for row in tag_rows {
-            if let Ok((sid, tag)) = row {
-                db_tags.entry(sid).or_default().push(tag);
+        for (sid, tag) in tag_rows.flatten() {
+            db_tags.entry(sid).or_default().push(tag);
+        }
+        // U16: 已初始化（导入）的技能以 DB 为权威——即使无标签行也置空，不从前置 frontmatter 复活。
+        let mut initialized: HashSet<String> = HashSet::new();
+        if let Ok(mut init_stmt) = conn_for_tags
+            .prepare("SELECT key FROM settings WHERE key LIKE 'tag_initialized:%'")
+        {
+            if let Ok(rows) = init_stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for row in rows.flatten() {
+                    if let Some(id) = row.strip_prefix("tag_initialized:") {
+                        initialized.insert(id.to_string());
+                    }
+                }
             }
         }
         for skill in &mut skills {
             if let Some(tags) = db_tags.get(&skill.id) {
                 skill.tags = tags.clone();
+            } else if initialized.contains(&skill.id) {
+                skill.tags = Vec::new();
             }
         }
 
@@ -215,9 +340,8 @@ impl Store {
             skill.issue_count = local_issue_count + *issue_counts.get(&skill.id).unwrap_or(&0);
         }
 
-        if let Err(error) = self.persist_deployments(&all_statuses) {
-            extra_issues.push(format!("无法写入部署快照：{:#}", error));
-        }
+        // 读取状态不写数据库：deployments 快照从不被读取，每次刷新整表重写只会
+        // 增加写锁竞争（dsh 插件也会打开同一个 app.db），且非事务写入可能留下半张表。
 
         let mut issues: Vec<String> = all_statuses
             .iter()
@@ -237,6 +361,7 @@ impl Store {
             skills_root: self.skills_root.to_string_lossy().to_string(),
             database_path: self.database_path.to_string_lossy().to_string(),
             config_path: self.config_path.to_string_lossy().to_string(),
+            is_isolated: self.is_isolated,
             targets,
             skills,
             workspaces,
@@ -337,6 +462,7 @@ impl Store {
                 description: skill.description.clone(),
                 target_id: target.id.clone(),
                 target_name: target.name.clone(),
+                can_overwrite: TargetStatus::overwritable(&status.status),
                 status: status.status,
                 target_path: target_path.to_string_lossy().to_string(),
                 link_target: status.link_target,
@@ -362,6 +488,7 @@ impl Store {
                         link_target: None,
                         issue: Some(format!("无法读取目录：{}", error)),
                         root_exists,
+                        can_overwrite: false,
                     });
                     statuses.sort_by(|a, b| a.display_name.cmp(&b.display_name));
                     return Ok(statuses);
@@ -384,6 +511,7 @@ impl Store {
                             link_target: None,
                             issue: Some(format!("目录条目无法读取：{}", error)),
                             root_exists,
+                            can_overwrite: false,
                         });
                         continue;
                     }
@@ -393,8 +521,26 @@ impl Store {
                     continue;
                 }
                 let path = entry.path();
-                let Ok(metadata) = fs::symlink_metadata(&path) else {
-                    continue;
+                let metadata = match fs::symlink_metadata(&path) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        statuses.push(TargetStatus {
+                            id: status_id(&name, &target.id),
+                            skill_id: name.clone(),
+                            skill_name: name.clone(),
+                            display_name: name.clone(),
+                            description: "条目无法读取".to_string(),
+                            target_id: target.id.clone(),
+                            target_name: target.name.clone(),
+                            status: SkillStatus::Invalid,
+                            target_path: path.to_string_lossy().to_string(),
+                            link_target: None,
+                            issue: Some("无法读取该条目".to_string()),
+                            root_exists,
+                            can_overwrite: false,
+                        });
+                        continue;
+                    }
                 };
                 if metadata.file_type().is_symlink() {
                     let link_target = resolve_symlink_target(&path);
@@ -412,6 +558,7 @@ impl Store {
                             link_target: None,
                             issue: Some("软链接目标无法读取".to_string()),
                             root_exists,
+                            can_overwrite: false,
                         });
                         continue;
                     };
@@ -429,6 +576,7 @@ impl Store {
                             link_target: Some(source_path.to_string_lossy().to_string()),
                             issue: Some("软链接目标不存在".to_string()),
                             root_exists,
+                            can_overwrite: false,
                         });
                         continue;
                     }
@@ -450,6 +598,7 @@ impl Store {
                             link_target: Some(source_path.to_string_lossy().to_string()),
                             issue: Some("软链接目标缺少 SKILL.md".to_string()),
                             root_exists,
+                            can_overwrite: false,
                         });
                         continue;
                     }
@@ -468,6 +617,7 @@ impl Store {
                         link_target: Some(source_path.to_string_lossy().to_string()),
                         issue: Some("目标目录有技能，但尚未进入主库".to_string()),
                         root_exists,
+                        can_overwrite: false,
                     });
                     continue;
                 }
@@ -497,6 +647,7 @@ impl Store {
                         .map(|p| p.to_string_lossy().to_string()),
                     issue: Some("目标目录有技能，但尚未进入主库".to_string()),
                     root_exists,
+                    can_overwrite: false,
                 });
             }
         }
@@ -505,11 +656,15 @@ impl Store {
         Ok(statuses)
     }
 
+    /// 写入部署快照（单事务）。当前产品不读取该表，仅保留给迁移测试；
+    /// 不要在读取路径（load_app_state）中调用。
+    #[cfg(test)]
     pub fn persist_deployments(&self, statuses: &[TargetStatus]) -> Result<()> {
-        let conn = self.connection()?;
-        conn.execute("DELETE FROM deployments", [])?;
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM deployments", [])?;
         for status in statuses {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO deployments (id, skill_id, target_id, status, target_path, link_target)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
@@ -522,6 +677,7 @@ impl Store {
                 ],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -533,14 +689,28 @@ impl Store {
         let target_path = path
             .canonicalize()
             .with_context(|| format!("无法读取目标路径 {}", path.display()))?;
+        if !target_path.is_dir() {
+            return Err(anyhow!("目标路径不是文件夹：{}", target_path.display()));
+        }
         let name = target_path
             .file_name()
             .map(|value| value.to_string_lossy().to_string())
             .unwrap_or_else(|| "未命名目标".to_string());
         let id = stable_id(&target_path.to_string_lossy());
         let conn = self.connection()?;
+        // 同一路径（含默认全局目录）已存在时明确报错，不静默覆盖。
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT name FROM targets WHERE id = ?1 OR path = ?2",
+                params![id, target_path.to_string_lossy()],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(existing_name) = existing {
+            return Err(anyhow!("该目标已存在：{}", existing_name));
+        }
         conn.execute(
-            "INSERT OR REPLACE INTO targets (id, name, path, is_default) VALUES (?1, ?2, ?3, 0)",
+            "INSERT INTO targets (id, name, path, is_default) VALUES (?1, ?2, ?3, 0)",
             params![id, name, target_path.to_string_lossy()],
         )?;
         Ok(())
@@ -561,6 +731,28 @@ impl Store {
             .unwrap_or(false);
         if is_default {
             return Err(anyhow!("默认目标不能移除"));
+        }
+        // U05: 若目标下仍有指向主库的受管软链，必须先收回，拒绝直接移除。
+        let target_row: String = conn.query_row(
+            "SELECT path FROM targets WHERE id = ?1",
+            params![target_id],
+            |row| row.get(0),
+        )?;
+        let skills_path = compute_skills_path(&target_row);
+        if let Ok(entries) = fs::read_dir(&skills_path) {
+            let mut managed = 0usize;
+            for entry in entries {
+                let entry = entry
+                    .with_context(|| format!("读取目标目录条目失败：{}", skills_path.display()))?;
+                let p = entry.path();
+                let expected = self.skills_root.join(entry.file_name());
+                if is_link_to(&p, &expected) {
+                    managed += 1;
+                }
+            }
+            if managed > 0 {
+                return Err(anyhow!("该目标下仍有 {} 个受管技能，请先收回后再移除", managed));
+            }
         }
         let changed = conn.execute("DELETE FROM targets WHERE id = ?1", params![target_id])?;
         if changed == 0 {
@@ -584,18 +776,59 @@ impl Store {
         )?;
         let mut stmt = conn
             .prepare("INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)")?;
+        let mut seen: HashSet<String> = HashSet::new();
         for tag in tags {
             let trimmed = tag.trim();
-            if !trimmed.is_empty() {
+            if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
                 stmt.execute(params![skill_id, trimmed])?;
             }
         }
         Ok(())
     }
 
+    /// U16: 导入时写入权威标记，使空标签集合为权威（删空不从前置 frontmatter 复活）。
+    pub fn initialize_skill_tags(&self, skill_id: &str, tags: &[String]) -> Result<()> {
+        let key = format!("tag_initialized:{}", skill_id);
+        {
+            let conn = self.connection()?;
+            let already: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = ?1",
+                    params![key],
+                    |row| row.get(0),
+                )
+                .ok();
+            if already.is_some() {
+                return Ok(());
+            }
+        }
+        self.set_skill_tags(skill_id, tags)?;
+        let conn = self.connection()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, '1')",
+            params![key],
+        )?;
+        Ok(())
+    }
+
+    /// 删除技能时清理其标签关联。
+    pub fn forget_skill_tags(&self, skill_id: &str) -> Result<()> {
+        let conn = self.connection()?;
+        conn.execute("DELETE FROM skill_tags WHERE skill_id = ?1", params![skill_id])?;
+        conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            params![format!("tag_initialized:{}", skill_id)],
+        )?;
+        Ok(())
+    }
+
     pub fn get_all_tags(&self) -> Result<Vec<String>> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT DISTINCT tag FROM skill_tags ORDER BY tag")?;
+        let mut stmt = conn.prepare(
+            "SELECT tag FROM skill_tags \
+             UNION SELECT tag FROM tag_meta \
+             ORDER BY tag",
+        )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .context("无法读取标签列表")
@@ -629,6 +862,20 @@ impl Store {
 
     pub fn rename_tag(&self, old_name: &str, new_name: &str) -> Result<()> {
         let conn = self.connection()?;
+        if old_name == new_name {
+            return Ok(()); // 同名 no-op
+        }
+        // 目标名已存在 → 拒绝，避免意外合并
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tag_meta WHERE tag = ?1",
+                params![new_name],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if exists > 0 {
+            return Err(anyhow!("标签已存在：{}", new_name));
+        }
         conn.execute(
             "UPDATE skill_tags SET tag = ?1 WHERE tag = ?2",
             params![new_name, old_name],
@@ -731,9 +978,7 @@ impl Store {
 
 }
 
-fn sync_default_target(conn: &Connection) -> Result<()> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("无法定位用户主目录"))?;
-    let global_path = home.join(".agents").join("skills");
+fn sync_default_target(conn: &Connection, global_root: &Path) -> Result<()> {
     conn.execute(
         "INSERT INTO targets (id, name, path, is_default)
          VALUES (?1, ?2, ?3, 1)
@@ -744,7 +989,7 @@ fn sync_default_target(conn: &Connection) -> Result<()> {
         params![
             DEFAULT_GLOBAL_DIR_ID,
             DEFAULT_GLOBAL_DIR_NAME,
-            global_path.to_string_lossy(),
+            global_root.to_string_lossy(),
         ],
     )?;
     Ok(())
@@ -769,12 +1014,18 @@ fn analyze_target_path(target_path: &Path, skill_path: &Path, root_exists: bool)
         };
     }
 
-    let Ok(metadata) = fs::symlink_metadata(target_path) else {
-        return PathAnalysis {
-            status: SkillStatus::Disabled,
-            link_target: None,
-            issue: None,
-        };
+    let metadata = match fs::symlink_metadata(target_path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return PathAnalysis { status: SkillStatus::Disabled, link_target: None, issue: None };
+        }
+        Err(_) => {
+            return PathAnalysis {
+                status: SkillStatus::Invalid,
+                link_target: None,
+                issue: Some("无法读取目标位置".to_string()),
+            };
+        }
     };
 
     if metadata.file_type().is_symlink() {
@@ -869,6 +1120,90 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// U04: 目标位置指纹（覆盖竞态保护）
+// ---------------------------------------------------------------------------
+
+/// 纯分类：stat 错误 → 指纹 kind。NotFound→missing，其余→unknown（绝不误判缺失）。
+pub(crate) fn classify_stat_error(e: &std::io::Error) -> &'static str {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        "missing"
+    } else {
+        "unknown"
+    }
+}
+
+/// 计算目标位置现存对象指纹。目录用递归内容散列，内部修改即变。读取失败 → unknown。
+pub fn fingerprint_of(path: &Path) -> crate::models::PathFingerprint {
+    use crate::models::PathFingerprint;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            return PathFingerprint { kind: classify_stat_error(&e).to_string(), ..Default::default() };
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return PathFingerprint {
+            kind: "symlink".into(),
+            link_target: resolve_symlink_target(path).map(|p| p.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+    }
+    if metadata.is_dir() {
+        return match hash_dir_contents(path) {
+            Some(h) => PathFingerprint { kind: "dir".into(), content_hash: Some(h), ..Default::default() },
+            None => PathFingerprint { kind: "unknown".into(), ..Default::default() },
+        };
+    }
+    let mtime_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64);
+    PathFingerprint { kind: "file".into(), size: Some(metadata.len()), mtime_ms, ..Default::default() }
+}
+
+/// 递归目录内容散列；任一条目读取失败 → None（fail-closed）。
+fn hash_dir_contents(root: &Path) -> Option<String> {
+    let mut entries: Vec<String> = Vec::new();
+    for e in WalkDir::new(root).follow_links(false) {
+        let e = match e {
+            Ok(v) => v,
+            Err(_) => return None,
+        };
+        let rel = match e.path().strip_prefix(root) {
+            Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().to_string(),
+            _ => continue,
+        };
+        let m = match e.metadata() {
+            Ok(m) => m,
+            Err(_) => return None,
+        };
+        let kind = if m.file_type().is_dir() {
+            'd'
+        } else if m.file_type().is_symlink() {
+            'l'
+        } else {
+            'f'
+        };
+        let mtime_ns = m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        entries.push(format!("{}\t{}\t{}\t{}", rel, kind, m.len(), mtime_ns));
+    }
+    entries.sort();
+    let canonical = entries.join("\n");
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in canonical.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    Some(format!("{:016x}", h))
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,5 +1456,179 @@ mod tests {
     fn compute_skills_path_strips_trailing_slash() {
         let result = compute_skills_path("/Users/test/.agents/skills/");
         assert_eq!(result, PathBuf::from("/Users/test/.agents/skills"));
+    }
+
+    fn fresh_home(tag: &str) -> PathBuf {
+        let h = std::env::temp_dir().join(format!(
+            "yz-home-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t").replace(|c: char| !c.is_ascii_alphanumeric(), "")
+        ));
+        let _ = fs::remove_dir_all(&h);
+        fs::create_dir_all(&h).unwrap();
+        h
+    }
+
+    #[test]
+    fn default_plan_uses_real_home_paths() {
+        let home = fresh_home("default");
+        let p = plan_store_paths(None, &home).unwrap();
+        assert!(!p.is_isolated);
+        assert_eq!(p.base_dir, home.join(".skills-manager"));
+        assert_eq!(p.global_root, home.join(".agents").join("skills"));
+    }
+
+    #[test]
+    fn isolated_plan_requires_absolute_and_marker() {
+        let home = fresh_home("iso");
+        assert!(plan_store_paths(Some("relative/path"), &home).is_err());
+        let existing = home.join("plain");
+        fs::create_dir_all(&existing).unwrap();
+        assert!(plan_store_paths(existing.to_str(), &home).is_err());
+        let root = home.join("casper-root");
+        let p = plan_store_paths(root.to_str(), &home).unwrap();
+        assert!(p.is_isolated);
+        assert!(root.join(TEST_ROOT_MARKER).exists());
+        let root_canon = root.canonicalize().unwrap();
+        assert!(p.base_dir.starts_with(&root_canon));
+        assert!(p.global_root.starts_with(&root_canon));
+    }
+
+    #[test]
+    fn isolated_plan_refuses_real_skill_dir() {
+        let home = fresh_home("forbid");
+        let real_base = home.join(".skills-manager");
+        fs::create_dir_all(&real_base).unwrap();
+        fs::write(real_base.join(TEST_ROOT_MARKER), "x").unwrap();
+        assert!(plan_store_paths(real_base.to_str(), &home).is_err());
+        let real_agents = home.join(".agents").join("skills");
+        fs::create_dir_all(&real_agents).unwrap();
+        fs::write(real_agents.join(TEST_ROOT_MARKER), "x").unwrap();
+        assert!(plan_store_paths(real_agents.to_str(), &home).is_err());
+    }
+
+    #[test]
+    fn fingerprint_classifies_and_detects_internal_change() {
+        let tmp = fresh_home("fp");
+        let dir = tmp.join("occupied");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/a.txt"), "v1").unwrap();
+        let fp1 = fingerprint_of(&dir);
+        assert_eq!(fp1.kind, "dir");
+        let hash1 = fp1.content_hash.clone().unwrap();
+        fs::write(dir.join("sub/a.txt"), "v2 changed").unwrap();
+        let fp2 = fingerprint_of(&dir);
+        assert_ne!(fp1, fp2);
+        assert_ne!(hash1, fp2.content_hash.unwrap());
+        assert_eq!(fingerprint_of(&tmp.join("nope")).kind, "missing");
+    }
+
+    #[test]
+    fn analyze_target_path_cores_states() {
+        let tmp = fresh_home("states");
+        let skill = tmp.join("libskill");
+        fs::create_dir_all(&skill).unwrap();
+        assert_eq!(analyze_target_path(&tmp.join("x"), &skill, false).status, SkillStatus::PathMissing);
+        assert_eq!(analyze_target_path(&tmp.join("missing"), &skill, true).status, SkillStatus::Disabled);
+        let link = tmp.join("own");
+        std::os::unix::fs::symlink(&skill, &link).unwrap();
+        assert_eq!(analyze_target_path(&link, &skill, true).status, SkillStatus::Enabled);
+        let realdir = tmp.join("realdir");
+        fs::create_dir_all(&realdir).unwrap();
+        assert_eq!(analyze_target_path(&realdir, &skill, true).status, SkillStatus::Conflict);
+    }
+
+    #[test]
+    fn ensure_database_rebuilds_legacy_deployments_table() {
+        let home = fresh_home("legacy-deployments");
+        let base_dir = home.join(".skills-manager");
+        let store = Store {
+            skills_root: base_dir.join("skills"),
+            database_path: base_dir.join("app.db"),
+            config_path: base_dir.join("config.json"),
+            base_dir,
+            is_isolated: false,
+            global_root: home.join(".agents").join("skills"),
+        };
+        fs::create_dir_all(&store.skills_root).unwrap();
+
+        // 复现 Agent/Project 双模型时期的 deployments 表结构
+        {
+            let conn = store.connection().unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE deployments (
+                  id TEXT PRIMARY KEY,
+                  skill_id TEXT NOT NULL,
+                  target_kind TEXT NOT NULL,
+                  agent_id TEXT NOT NULL,
+                  project_id TEXT,
+                  status TEXT NOT NULL,
+                  target_path TEXT NOT NULL,
+                  link_target TEXT
+                );
+                INSERT INTO deployments (id, skill_id, target_kind, agent_id, status, target_path)
+                  VALUES ('legacy', 'demo', 'agent', 'agents', 'enabled', '/tmp/demo');
+                "#,
+            )
+            .unwrap();
+        }
+
+        store.ensure_database().unwrap();
+
+        let conn = store.connection().unwrap();
+        let columns = table_columns(&conn, "deployments").unwrap();
+        for column in ["id", "skill_id", "target_id", "status", "target_path", "link_target"] {
+            assert!(columns.contains(column), "迁移后缺少列 {column}");
+        }
+        assert!(!columns.contains("agent_id"), "旧列 agent_id 应已移除");
+        let stale_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deployments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stale_rows, 0, "旧快照行不应残留");
+
+        // 迁移后写入部署快照必须成功（即原报错路径）
+        store
+            .persist_deployments(&[TargetStatus {
+                id: "demo-agents".to_string(),
+                skill_id: "demo".to_string(),
+                skill_name: "demo".to_string(),
+                display_name: "demo".to_string(),
+                description: String::new(),
+                target_id: "agents".to_string(),
+                target_name: "全局".to_string(),
+                status: SkillStatus::Enabled,
+                target_path: "/tmp/demo".to_string(),
+                link_target: None,
+                issue: None,
+                root_exists: true,
+                can_overwrite: false,
+            }])
+            .unwrap();
+        let snapshot_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM deployments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(snapshot_rows, 1);
+    }
+
+    #[test]
+    fn ensure_database_keeps_current_deployments_schema() {
+        let home = fresh_home("current-deployments");
+        let base_dir = home.join(".skills-manager");
+        let store = Store {
+            skills_root: base_dir.join("skills"),
+            database_path: base_dir.join("app.db"),
+            config_path: base_dir.join("config.json"),
+            base_dir,
+            is_isolated: false,
+            global_root: home.join(".agents").join("skills"),
+        };
+        fs::create_dir_all(&store.skills_root).unwrap();
+        store.ensure_database().unwrap();
+        // 二次调用不应破坏已有结构
+        store.ensure_database().unwrap();
+        let columns = table_columns(&store.connection().unwrap(), "deployments").unwrap();
+        assert!(columns.contains("target_id"));
     }
 }

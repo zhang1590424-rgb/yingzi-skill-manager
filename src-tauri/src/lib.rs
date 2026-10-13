@@ -26,7 +26,9 @@ pub fn run() {
             commands::delete_tag,
             commands::create_tag,
             commands::reorder_tag,
-            commands::reorder_tags
+            commands::reorder_tags,
+            commands::get_skill_content,
+            commands::get_target_fingerprint
         ])
         .run(tauri::generate_context!())
         .expect("failed to run skill hub");

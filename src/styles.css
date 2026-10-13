@@ -1,8 +1,7 @@
 /* ===== 影子 v2 Design System ===== */
 /* Premium Utilitarian Minimalism */
 /* Warm monochrome + editorial type + desaturated pastel accents */
-
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap');
+/* Offline system font stack — no external font requests */
 
 :root {
   /* Canvas */
@@ -32,10 +31,9 @@
   --button-primary: #111111;
   --button-hover: #333333;
 
-  /* Fonts */
-  --font-sans: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
-  --font-serif: 'Instrument Serif', 'Newsreader', serif;
-  --font-mono: 'SF Mono', 'Geist Mono', 'JetBrains Mono', monospace;
+  /* Fonts — offline system stack, no external requests */
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
 
   /* Motion */
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
@@ -93,6 +91,37 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ===== Global focus visibility (U17) ===== */
+:focus-visible {
+  outline: 2px solid var(--button-primary);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Busy state (U18) */
+[aria-busy="true"] {
+  cursor: wait;
+  opacity: 0.7;
+}
+[aria-busy="true"] > * {
+  pointer-events: none;
+}
+
+/* Disabled buttons unified (U18) */
+.btn:disabled,
+.btn-sm:disabled,
+.btn-icon:disabled,
+.row-action-btn:disabled,
+.sticky-action-bar button:disabled,
+.card-hover-action button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none !important;
+  pointer-events: none;
+}
+
 /* ===== Layout ===== */
 .app-shell {
   display: flex;
@@ -114,12 +143,12 @@ body {
 
 /* ===== Toolbar ===== */
 .toolbar {
-  padding: 20px var(--space-xl);
+  padding: 14px var(--space-xl) 12px;
   -webkit-app-region: drag;
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   flex-shrink: 0;
   position: relative;
   z-index: 10;
@@ -184,10 +213,17 @@ body {
 }
 
 .target-dropdown-chevron {
-  font-size: 10px;
+  flex-shrink: 0;
   color: var(--text-tertiary);
-  transform: rotate(-90deg);
   transition: transform var(--duration-fast) ease;
+}
+
+.target-dropdown-chevron.open {
+  transform: rotate(180deg);
+}
+
+.target-dropdown-trigger.is-missing .target-dropdown-label {
+  color: var(--accent-red-text);
 }
 
 .target-dropdown-menu {
@@ -206,15 +242,40 @@ body {
 
 .target-dropdown-item {
   display: flex;
+  width: 100%;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
+  border: none;
+  background: transparent;
   border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
   font-size: 12px;
+  text-align: left;
   color: var(--text-primary);
   cursor: pointer;
   transition: background var(--duration-fast) ease;
+}
+
+.target-dropdown-item:focus-visible {
+  outline-offset: -2px;
+  background: #F7F6F3;
+}
+
+.target-dropdown-item.is-missing .target-dropdown-name {
+  color: var(--text-secondary);
+}
+
+.target-missing-tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent-red-text);
+  background: var(--accent-red-bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
 }
 
 .target-dropdown-item:hover {
@@ -228,9 +289,9 @@ body {
 
 .target-dropdown-path {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
   color: var(--text-tertiary);
-  max-width: 140px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -265,10 +326,54 @@ body {
 /* Filter chips */
 .filter-row {
   display: flex;
-  gap: 6px;
+  gap: 8px 16px;
   flex-wrap: wrap;
   -webkit-app-region: no-drag;
   align-items: center;
+  justify-content: space-between;
+}
+
+.filter-group {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+}
+
+/* U11：状态分段控件（目标上下文），与标签筛选互不清除 */
+.status-segment {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 2px;
+  gap: 2px;
+  background: #F2F1EE;
+  border-radius: var(--radius-md);
+}
+
+.status-segment-item {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
+}
+
+.status-segment-item:hover {
+  color: var(--text-primary);
+}
+
+.status-segment-item.active {
+  background: var(--surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 .filter-chip {
@@ -311,82 +416,6 @@ body {
   background: var(--button-primary);
   color: var(--text-inverse);
   border-color: var(--button-primary);
-}
-
-/* Status filter dropdown */
-.status-dropdown {
-  margin-left: auto;
-  position: relative;
-  flex-shrink: 0;
-}
-
-.status-dropdown-trigger {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  font-size: 11px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
-}
-
-.status-dropdown-trigger:hover {
-  border-color: #CCC;
-  color: var(--text-primary);
-}
-
-.status-dropdown-trigger.active {
-  border-color: var(--button-primary);
-  color: var(--text-primary);
-}
-
-.status-dropdown-label {
-  white-space: nowrap;
-}
-
-.status-dropdown-chevron {
-  font-size: 8px;
-  color: var(--text-secondary);
-}
-
-.status-dropdown-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  min-width: 150px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
-  z-index: 100;
-  animation: fadeInUp 150ms var(--ease-out-expo) both;
-}
-
-.status-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background 0.1s ease;
-}
-
-.status-dropdown-item:hover {
-  background: #F7F6F3;
-}
-
-.status-dropdown-item.active {
-  color: var(--text-primary);
-  font-weight: 500;
-  background: #F0EFED;
 }
 
 /* ===== Buttons ===== */
@@ -445,7 +474,7 @@ body {
 
 .btn-sm {
   padding: 4px 10px;
-  font-size: 10px;
+  font-size: 11px;
   border-radius: 5px;
 }
 
@@ -454,7 +483,7 @@ body {
   display: inline-block;
   padding: 3px 9px;
   border-radius: 9999px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
 }
 
@@ -462,11 +491,11 @@ body {
 .skill-grid-grouped {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-lg) var(--space-xl);
+  padding: var(--space-md) var(--space-xl) var(--space-lg);
 }
 
 .skill-group {
-  margin-bottom: var(--space-2xl);
+  margin-bottom: var(--space-xl);
 }
 
 .skill-group:last-child {
@@ -477,7 +506,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: var(--space-md);
+  margin-bottom: var(--space-sm);
 }
 
 .skill-group-dot {
@@ -514,19 +543,17 @@ body {
   border-radius: var(--radius-lg);
   cursor: pointer;
   transition: box-shadow var(--duration-fast) ease, transform var(--duration-fast) ease;
-  animation: fadeInUp var(--duration-slow) var(--ease-out-expo) both;
+  /* U21: no global entrance animation; only .highlighted wash and .exiting exit. */
 }
 
 .skill-card:hover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
-.skill-card.dimmed {
-  opacity: 0.55;
-}
-
-.skill-card.dimmed:hover {
-  opacity: 0.85;
+/* I1：卡片可键盘聚焦 */
+.skill-card:focus-visible {
+  outline: 2px solid var(--button-primary);
+  outline-offset: 2px;
 }
 
 .skill-card.highlighted {
@@ -562,8 +589,8 @@ body {
 }
 
 .skill-card .card-title {
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text-primary);
 }
 
@@ -575,23 +602,13 @@ body {
   min-height: 20px;
 }
 
-.skill-card .card-stat-text {
-  font-size: 10px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.skill-card .card-stat-text.problem {
-  color: var(--accent-red-text);
-}
-
 .skill-card .card-status-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 9999px;
   white-space: nowrap;
   flex-shrink: 0;
@@ -613,10 +630,10 @@ body {
 }
 
 .skill-card .card-desc {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-secondary);
   margin-top: var(--space-xs);
-  line-height: 1.5;
+  line-height: 1.55;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -639,20 +656,23 @@ body {
   min-width: 0;
 }
 
-/* Hover action overlay */
+/* Card action row — in document flow, reserves space, never covers tags.
+   opacity:0 keeps buttons in Tab order; pointer-events:none blocks mis-clicks.
+   Revealed by :hover (mouse) or :focus-within (keyboard Tab into button). */
 .skill-card .card-hover-action {
-  position: absolute;
-  bottom: var(--space-sm);
-  right: var(--space-sm);
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: var(--space-sm);
+  min-height: 28px;
   opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 0.15s ease, transform 0.15s ease;
   pointer-events: none;
+  transition: opacity 0.15s ease;
 }
 
-.skill-card:hover .card-hover-action {
+.skill-card:hover .card-hover-action,
+.skill-card:focus-within .card-hover-action {
   opacity: 1;
-  transform: translateY(0);
   pointer-events: auto;
 }
 
@@ -698,6 +718,10 @@ body {
   color: var(--text-secondary);
 }
 
+.sticky-action-warn {
+  color: var(--accent-red-text);
+}
+
 .sticky-action-buttons {
   display: flex;
   gap: 6px;
@@ -735,7 +759,7 @@ body {
   top: 0;
   bottom: 0;
   width: 340px;
-  max-width: calc(100vw - 184px);
+  max-width: calc(100vw - 560px);
   background: var(--surface);
   border-left: 1px solid var(--border);
   padding: 20px 24px;
@@ -814,13 +838,10 @@ body {
 }
 
 .drawer-desc {
-  font-size: 11.5px;
+  font-size: 14px;
+  line-height: 1.65;
   color: var(--text-secondary);
   margin-top: var(--space-xs);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 .drawer-section {
@@ -869,8 +890,10 @@ body {
 /* Target action rows in detail panel */
 .target-action-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 6px 8px;
   padding: 8px 10px;
   border-radius: var(--radius-md);
   margin-bottom: 2px;
@@ -944,6 +967,7 @@ body {
   right: 0;
   bottom: 0;
   width: 380px;
+  max-width: calc(100vw - 560px);
   background: var(--canvas);
   border-left: 1px solid var(--border);
   display: flex;
@@ -1282,13 +1306,14 @@ body {
   transition: opacity 0.1s ease;
 }
 
-.settings-tag-row:hover .settings-tag-actions {
+.settings-tag-row:hover .settings-tag-actions,
+.settings-tag-row:focus-within .settings-tag-actions {
   opacity: 1;
 }
 
 .settings-tag-action-btn {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   border-radius: 4px;
   border: none;
   background: none;
@@ -1384,15 +1409,15 @@ body {
 
 /* ===== Markdown preview ===== */
 .markdown-preview {
-  font-size: 12px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.65;
   color: var(--text-secondary);
 }
 
 .markdown-preview h1,
 .markdown-preview h2,
 .markdown-preview h3 {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
   margin-top: var(--space-lg);
@@ -1502,7 +1527,7 @@ body {
 
 .confirm-detail-row {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--text-secondary);
   word-break: break-all;
@@ -1525,40 +1550,60 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 500;
-  max-width: 280px;
-  padding: 8px 16px;
+  max-width: 440px;
+  width: calc(100vw - 48px);
+  padding: 10px 16px;
   background: var(--surface);
-  border-radius: 20px;
-  box-shadow: 0 2px 8px rgba(47, 52, 55, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(47, 52, 55, 0.08);
   animation: toastIn 160ms ease-out both;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .toast::before {
   content: "";
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
+  margin-top: 4px;
 }
 
-.toast-success::before {
-  background: #7B9E73;
+.toast-success {
+  background: #EFF4EC;
+  border-color: rgba(123, 158, 115, 0.25);
 }
+.toast-success::before { background: #5C8A54; }
 
-.toast-error::before {
-  background: #C4636A;
+.toast-error {
+  background: #FDECEC;
+  border-color: rgba(159, 47, 45, 0.2);
 }
+.toast-error::before { background: #B3353B; }
+
+.toast-warning {
+  background: #FBF3E4;
+  border-color: rgba(168, 124, 42, 0.25);
+}
+.toast-warning::before { background: #B07D20; }
+
+.toast-info {
+  background: #EBF2F8;
+  border-color: rgba(31, 108, 159, 0.2);
+}
+.toast-info::before { background: #1F6C9F; }
 
 .toast-text {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
+  white-space: pre-line;
 }
 
 .toast-exiting {
@@ -1684,19 +1729,6 @@ body {
   color: var(--text-tertiary);
 }
 
-.import-spinner {
-  width: 20px;
-  height: 20px;
-  border: 2px solid var(--border);
-  border-top-color: var(--text-primary);
-  border-radius: 50%;
-  animation: spin 600ms linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 .import-error {
   font-size: 12px;
   color: #C4554D;
@@ -1752,7 +1784,7 @@ body {
   gap: 3px;
   padding: 3px 9px;
   border-radius: 9999px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.03em;
   transition: background var(--duration-fast) ease;
@@ -1785,8 +1817,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   border: 1px dashed var(--border);
   background: transparent;
@@ -1874,7 +1906,7 @@ body {
 
 .context-menu-label {
   padding: 6px 10px 4px;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1918,7 +1950,7 @@ body {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  font-size: 10px;
+  font-size: 12px;
   font-family: var(--font-sans);
   color: var(--text-primary);
   outline: none;
@@ -1926,4 +1958,325 @@ body {
 
 .context-menu-input input:focus {
   border-color: #CCC;
+}
+
+/* ===== Stale / issue / isolated banners ===== */
+.stale-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: 10px var(--space-xl);
+  background: var(--accent-yellow-bg, #FBF3E4);
+  color: var(--accent-yellow-text, #8A5A00);
+  font-size: 13px;
+  border-bottom: 1px solid rgba(149, 100, 0, 0.15);
+}
+
+.issue-banner {
+  background: #FDECEC;
+  color: #8A2626;
+  border-bottom-color: rgba(159, 47, 45, 0.2);
+}
+
+.isolated-banner {
+  background: #EBF2F8;
+  color: #1F4E6B;
+  border-bottom-color: rgba(31, 108, 159, 0.15);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* "当前" tag next to active target name in drawer */
+.target-current-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--button-primary);
+  background: #F0EFED;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+
+/* Problem reason — persistent, multi-line, no ellipsis */
+.target-issue-reason {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--accent-red-text, #8A2626);
+  background: var(--accent-red-bg, #FDECEC);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  margin-top: 6px;
+  word-break: break-word;
+  white-space: normal;
+}
+
+/* Target action row — current target highlight */
+.target-action-row.is-current {
+  background: #F5F4F2;
+  box-shadow: inset 2px 0 0 var(--button-primary);
+}
+
+/* Drawer title actions */
+.drawer-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.drawer-link-btn {
+  background: none;
+  border: none;
+  color: #1F6C9F;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.drawer-link-btn:hover {
+  background: rgba(31, 108, 159, 0.08);
+}
+
+/* Import actions — two zones side by side */
+.import-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* Import preview — ZIP skill list with checkboxes */
+.import-preview-list {
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--canvas);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.import-preview-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.import-preview-item:hover {
+  background: #F0EFED;
+}
+
+.import-preview-item input[type="checkbox"] {
+  accent-color: var(--button-primary);
+}
+
+/* ===== Inline persistent error bar (U18) ===== */
+.inline-error-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px var(--space-xl);
+  background: #FDECEC;
+  border-bottom: 1px solid rgba(159, 47, 45, 0.2);
+  font-size: 13px;
+  line-height: 1.55;
+  color: #8A2626;
+  word-break: break-word;
+  white-space: pre-line;
+}
+
+.inline-error-bar > span,
+.inline-error-bar > div {
+  min-width: 0;
+}
+
+.inline-error-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: #8A2626;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.inline-error-close:hover {
+  background: rgba(159, 47, 45, 0.1);
+}
+
+/* Target issue hint — no one-click action */
+.target-issue-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* ===== 提示区：横幅 / 错误条 / 批量结果在文档流中纵向堆叠（V3） ===== */
+.notice-stack {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.notice-stack:empty {
+  display: none;
+}
+
+.notice-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.new-import-banner {
+  background: #F4F2EC;
+  color: var(--text-primary);
+  border-bottom-color: var(--border);
+}
+
+/* 批量部分失败：持久面板，色调随结果（warning / error），不再一律红色（I4） */
+.batch-result-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px var(--space-xl);
+  font-size: 13px;
+  line-height: 1.55;
+  border-bottom: 1px solid var(--border);
+}
+
+.batch-result-bar.tone-warning {
+  background: var(--accent-yellow-bg);
+  color: var(--accent-yellow-text);
+  border-bottom-color: rgba(149, 100, 0, 0.15);
+}
+
+.batch-result-bar.tone-error {
+  background: #FDECEC;
+  color: #8A2626;
+  border-bottom-color: rgba(159, 47, 45, 0.2);
+}
+
+.batch-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.batch-result-title {
+  font-weight: 600;
+}
+
+.batch-result-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 96px;
+  overflow-y: auto;
+  font-size: 12px;
+  word-break: break-word;
+}
+
+/* ===== 刷新按钮 ===== */
+.btn-icon svg.spin {
+  animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== 读屏专用文字 ===== */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ===== 原 div / span 改为 button 后的样式重置（键盘可达） ===== */
+.context-menu-item,
+.settings-tag-dot,
+.settings-tag-picker-option,
+.settings-tag-name,
+.tag-editor .tag-pill .tag-remove {
+  border: none;
+  font-family: var(--font-sans);
+}
+
+.context-menu-item {
+  width: 100%;
+  background: transparent;
+  text-align: left;
+}
+
+.settings-tag-name {
+  background: transparent;
+  text-align: left;
+  min-width: 0;
+}
+
+.tag-editor .tag-pill .tag-remove {
+  background: transparent;
+  padding: 0;
+}
+
+/* 详情抽屉：SKILL.md 折叠标题与「打开原文件」并排，二者都是按钮 */
+.drawer-collapsible-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: var(--space-sm);
+}
+
+.drawer-collapsible-row .drawer-collapsible {
+  flex: 1;
+  margin-bottom: 0;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+/* 失效目标卡片 */
+.settings-path-card.is-missing .settings-path-value {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: rgba(0, 0, 0, 0.2);
+}
+
+/* 导入预览：已存在的技能 */
+.import-preview-item.is-existing .import-preview-name {
+  color: var(--text-secondary);
+}
+
+.import-preview-name {
+  font-weight: 500;
+  flex-shrink: 0;
 }
